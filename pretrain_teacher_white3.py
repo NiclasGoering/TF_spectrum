@@ -11,13 +11,62 @@ from FFNN import DeepNN
 from utils2 import save_results, save_model, save_dataset
 
 
-def create_target_kernel(feature_dim: int, alpha: float, device: torch.device):
+# def create_target_kernel(feature_dim: int, alpha: float, device: torch.device):
+#     """
+#     Creates a target kernel matrix T ∈ ℝ^(feature_dim×feature_dim) with eigenvalues decaying as 1/(i+1)^α.
+#     The eigenvalues are scaled so that trace(T) = feature_dim.
+#     """
+#     eig_vals = np.array([1.0 / ((i + 1) ** alpha) for i in range(feature_dim)], dtype=np.float32)
+#     scale = feature_dim / eig_vals.sum()
+#     eig_vals_scaled = eig_vals * scale
+#     D = torch.diag(torch.tensor(eig_vals_scaled, device=device))
+    
+#     # Create a random orthogonal matrix Q via QR decomposition.
+#     A = torch.randn(feature_dim, feature_dim, device=device)
+#     Q, _ = torch.linalg.qr(A)
+    
+#     target_kernel = Q @ D @ Q.T
+#     target_kernel = (target_kernel + target_kernel.T) / 2  # Force symmetry.
+    
+#     # Shift T if necessary to be positive semidefinite.
+#     eigvals = torch.linalg.eigvalsh(target_kernel)
+#     if eigvals[0] < 0:
+#         target_kernel = target_kernel - eigvals[0] * torch.eye(feature_dim, device=device)
+#     target_eigenvals = torch.sort(torch.linalg.eigvalsh(target_kernel))[0]
+#     return target_kernel, target_eigenvals
+
+
+
+def create_target_kernel(feature_dim: int, alpha: float, device: torch.device, effective_rank: int = None, eps: float = 1e-8):
     """
-    Creates a target kernel matrix T ∈ ℝ^(feature_dim×feature_dim) with eigenvalues decaying as 1/(i+1)^α.
-    The eigenvalues are scaled so that trace(T) = feature_dim.
+    Creates a target kernel matrix T ∈ ℝ^(feature_dim×feature_dim) such that:
+      - For the first 'effective_rank' eigenvalues, they decay as 1/(i+1)^alpha.
+      - For the remaining eigenvalues, they are set to a small value (eps).
+    The eigenvalues are then scaled so that trace(T) = effective_rank.
+    
+    Args:
+        feature_dim: Total dimension of the kernel.
+        alpha: Decay exponent for the eigenvalues.
+        device: Torch device.
+        effective_rank: The number of eigenvalues to have non-negligible values. If None, use feature_dim.
+        eps: A small constant for the eigenvalues beyond the effective rank.
+        
+    Returns:
+        target_kernel: The constructed target kernel matrix.
+        target_eigenvals: The sorted eigenvalues of the target kernel.
     """
-    eig_vals = np.array([1.0 / ((i + 1) ** alpha) for i in range(feature_dim)], dtype=np.float32)
-    scale = feature_dim / eig_vals.sum()
+    if effective_rank is None:
+        effective_rank = feature_dim
+
+    # Initialize eigenvalues: for indices < effective_rank use 1/(i+1)^alpha; for the rest, use eps.
+    eig_vals = np.zeros(feature_dim, dtype=np.float32)
+    for i in range(effective_rank):
+        eig_vals[i] = 1.0 / ((i + 1) ** alpha)
+    for i in range(effective_rank, feature_dim):
+        eig_vals[i] = eps
+
+    # Scale eigenvalues so that the trace equals effective_rank.
+    scale = effective_rank / eig_vals.sum()
     eig_vals_scaled = eig_vals * scale
     D = torch.diag(torch.tensor(eig_vals_scaled, device=device))
     
@@ -28,37 +77,22 @@ def create_target_kernel(feature_dim: int, alpha: float, device: torch.device):
     target_kernel = Q @ D @ Q.T
     target_kernel = (target_kernel + target_kernel.T) / 2  # Force symmetry.
     
-    # Shift T if necessary to be positive semidefinite.
+    # Ensure the matrix is positive semidefinite.
     eigvals = torch.linalg.eigvalsh(target_kernel)
     if eigvals[0] < 0:
         target_kernel = target_kernel - eigvals[0] * torch.eye(feature_dim, device=device)
-    target_eigenvals = torch.sort(torch.linalg.eigvalsh(target_kernel))[0]
-
     
+    target_eigenvals = torch.sort(torch.linalg.eigvalsh(target_kernel))[0]
     return target_kernel, target_eigenvals
 
 
 def smart_initialize_with_input_stats_modified(model: DeepNN, target_kernel: torch.Tensor, X: torch.Tensor, small_bias: float = 1e-2):
     """
-    Initializes the network as follows:
-      1. For all layers up to (but not including) the penultimate layer, we initialize with an identity–like pattern.
-      2. For the penultimate layer, we compute its weights based on the input covariance and the square-root of the target kernel.
-         (A small identity term is added for regularization.)
-    """
-    # Initialize earlier layers to an identity-like mapping.
-    for layer in model.network[:-2]:
-        if isinstance(layer, nn.Linear):
-            in_features = layer.in_features
-            out_features = layer.out_features
-            weight = torch.zeros(out_features, in_features, device=layer.weight.device)
-            if out_features >= in_features:
-                weight[:in_features, :] = torch.eye(in_features, device=layer.weight.device)
-            else:
-                weight[:, :out_features] = torch.eye(out_features, device=layer.weight.device)
-            layer.weight.data.copy_(weight)
-            if layer.bias is not None:
-                layer.bias.data.fill_(small_bias)
+    Adjusts the penultimate layer weights based on input statistics and the square-root of the target kernel.
     
+    Note: Unlike the previous version, we do not reinitialize the earlier layers with an identity-like pattern.
+    This way, the earlier layers remain at their default (normal) initialization.
+    """
     # For the penultimate layer, adjust weights using input statistics.
     penultimate_layer = model.network[-2]
     if isinstance(penultimate_layer, nn.Linear):
@@ -129,15 +163,16 @@ def lsuv_init(model: DeepNN, X: torch.Tensor, needed_std: float = 1.0, tol: floa
 def kernel_loss(model: DeepNN, X: torch.Tensor, target_kernel: torch.Tensor,
                 lambda_eig: float = 1.0, use_log: bool = True,
                 top_k: int = 20, lambda_top: float = 1e4,
-                frob_scale: float = 1.0, eig_scale: float = 1.0):
+                frob_scale: float = 100.0, eig_scale: float = 1.0,
+                rank_preservation_weight: float = 0.0):
     """
     Computes a composite loss between the normalized covariance of the penultimate features and the target kernel.
-    The loss terms are normalized (relative differences) and then scaled by given factors (frob_scale and eig_scale)
-    to produce a stronger gradient signal.
+    Includes an optional rank preservation penalty.
     
     Args:
         frob_scale: multiplier for the Frobenius norm term.
         eig_scale: multiplier for the eigenvalue loss term.
+        rank_preservation_weight: weight for the rank preservation penalty (if > 0, penalizes low-rank features).
     """
     # Compute penultimate features.
     features = X
@@ -157,7 +192,7 @@ def kernel_loss(model: DeepNN, X: torch.Tensor, target_kernel: torch.Tensor,
     loss_frob = frob_scale * loss_frob
 
     # Compute eigenvalue-based loss.
-    eig_C = torch.linalg.eigvalsh(C_norm)
+    eig_C = torch.linalg.eigvalsh(C_norm_reg)
     eig_T = torch.linalg.eigvalsh(target_kernel)
     
     if use_log:
@@ -169,22 +204,28 @@ def kernel_loss(model: DeepNN, X: torch.Tensor, target_kernel: torch.Tensor,
         loss_eig = torch.sum((eig_C - eig_T)**2)
     loss_eig = eig_scale * loss_eig
 
-    # Top-k eigenvalue loss (kept as is, but you might also consider scaling it).
+    # Compute top-k eigenvalue loss.
     top_eig_loss = torch.mean((eig_C[-top_k:] - eig_T[-top_k:])**2)
 
     total_loss = loss_frob + lambda_eig * loss_eig + lambda_top * top_eig_loss
-    return total_loss, loss_frob, loss_eig, top_eig_loss
 
+    # Add rank preservation penalty if specified.
+    if rank_preservation_weight > 0.0:
+        eig_C_clamped = torch.clamp(eig_C, min=1e-12)
+        rank_penalty = -torch.sum(torch.log(eig_C_clamped))
+        total_loss += rank_preservation_weight * rank_penalty
+
+    return total_loss, loss_frob, loss_eig, top_eig_loss
 
 
 def train_kernel_modified(model: DeepNN, X: torch.Tensor, target_kernel: torch.Tensor, epochs: int = 5000,
                           lr: float = 1e-3, lambda_eig: float = 10.0, use_log: bool = True,
                           top_k: int = 5, lambda_top: float = 100.0):
     """
-    Trains the network using Adam as the optimizer (instead of RAdam) with a cosine annealing scheduler.
+    Trains the network using Adam as the optimizer with a cosine annealing scheduler.
     The loss is based on the difference between the kernel of the penultimate features and the target kernel.
     """
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=200, T_mult=2)
     
     for epoch in range(epochs):
@@ -221,26 +262,30 @@ def compute_last_hidden_kernel_unnormalized_spectrum(model: DeepNN, X: torch.Ten
 
 def main():
     # --- Hyperparameters ---
-    d = 10                      # Input dimension.
-    hidden_size = 2**9           # Hidden layer (penultimate) size.
-    depth = 2                   # Total network depth.
+    d = 30                      # Input dimension.
+    hidden_size = 256           # Hidden layer (penultimate) size.
+    depth = 1                   # Total network depth.
     train_size = 300000         # Number of training samples.
     mode = 'mup_no_align'       # Network mode.
-    alpha =0.0                 # Use a milder decay exponent for a smoother target spectrum.
-    lambda_eig = 50.0           # Adjusted eigenvalue loss weight.
-    use_log = False              # Use logarithmic eigenvalue loss.
-    epochs = 40000               # Training epochs.
+    alpha = 0.0                 # Use a milder decay exponent for a smoother target spectrum.
+    lambda_eig = 50.0          # Adjusted eigenvalue loss weight.
+    use_log = False             # Use logarithmic eigenvalue loss.
+    epochs = 100000              # Training epochs.
     lr = 5e-2                   # Learning rate.
-    top_k = 3                   # Number of top eigenvalues to match.
-    lambda_top = 0.0          # Adjusted top-k loss weight.
+    top_k = 5                   # Number of top eigenvalues to match.
+    lambda_top = 10.0          # Adjusted top-k loss weight.
+    # Set the rank preservation weight (nonzero to add the penalty; adjust as needed)
+    rank_preservation_weight = 0.01  
     rank = 0                    # Rank for saving dataset.
+    effective_rank= 256 
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
     
     # --- Create the network and target kernel ---
     model = DeepNN(d, hidden_size, depth, mode=mode).to(device)
-    target_kernel_norm, target_eigenvalues_norm = create_target_kernel(hidden_size, alpha, device)
+    target_kernel_norm, target_eigenvalues_norm = create_target_kernel(hidden_size, alpha, device, effective_rank=effective_rank)
+    #target_kernel_norm, target_eigenvalues_norm = create_target_kernel(hidden_size, alpha, device)
     print("\nTarget kernel eigenvalues (ascending):")
     print(target_eigenvalues_norm.detach().cpu().numpy())
     
@@ -289,8 +334,8 @@ def main():
     # --- Save results and plots ---
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     smart_name = f"model_d{d}_hidden{hidden_size}_depth{depth}_alpha{alpha}_{timestamp}"
-    save_dir = os.path.join("/home/goring/TF_spectrum/results_pretrain_testgrid",
-                            f"results_{smart_name}")
+    save_dir = os.path.join("/home/goring/TF_spectrum/results_pretrain_testgrid_2/",
+                            f"results_2_{smart_name}")
     os.makedirs(save_dir, exist_ok=True)
     
     plt.figure(figsize=(10, 6))
@@ -321,7 +366,8 @@ def main():
             'epochs': epochs,
             'learning_rate': lr,
             'top_k': top_k,
-            'lambda_top': lambda_top
+            'lambda_top': lambda_top,
+            'rank_preservation_weight': rank_preservation_weight
         },
         'unnormalized_target_spectrum': target_spec.tolist(),
         'unnormalized_last_hidden_spectrum': last_hidden_spec.tolist(),
@@ -347,8 +393,8 @@ def main():
     print("\nFinal spectrum comparison summary:")
     print(f"Target spectrum range: [{target_spec[-1]:.2e}, {target_spec[0]:.2e}]")
     print(f"Achieved spectrum range: [{last_hidden_spec[-1]:.2e}, {last_hidden_spec[0]:.2e}]")
-    print(f"Condition numbers - Target: {target_spec[0]/target_spec[-1]:.2e}, "
-          f"Achieved: {last_hidden_spec[0]/last_hidden_spec[-1]:.2e}")
+    print(f"Condition numbers - Target: {target_spec[0]/(target_spec[-1]+1e-12):.2e}, "
+          f"Achieved: {last_hidden_spec[0]/(last_hidden_spec[-1]+1e-12):.2e}")
 
 
 if __name__ == "__main__":

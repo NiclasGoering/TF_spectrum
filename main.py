@@ -1,8 +1,3 @@
-
-
-
-
-
 #!/usr/bin/env python3
 import numpy as np
 import torch
@@ -48,31 +43,31 @@ def main():
 
     # ───────────────────── PARAMETERS ─────────────────────
     # Experiment name
-    experiment_name = "testgrid_d10_mup"
+    experiment_name = "d50_hidden512_NTK_depth_1"
 
     # Dimension of data (all datasets share the same d)
-    d = 10
+    d = 50
 
     # Potential model hidden sizes and depths
-    hidden_sizes = [5000,10000] #[2**7,2**9,2**10] #[5000,10000]
+    hidden_sizes = [2**8, 2**9, 2**10]   # #[5000,10000]  #[2**8, 2**9, 2**10]  # [5000,10000]
     hidden_sizes.reverse()
-    depths = [1,2,4,8]
+    depths = [1,2,4]
     depths.reverse()
     # Basic training parameters
     n_test = 20000
-    batch_size = 64
+    batch_size = 128  #64
     epochs = 5000
     checkpoint_epochs = []  # e.g. [100, 1000]
     weight_decay = 0.0
-    mode = 'NTK'  # or 'NTK', 'spectral', etc.
+    mode = 'mup_no_align'  # or 'NTK', 'spectral', etc. mup_no_align
     shuffled = False
     gamma = 1.0
     num_experiments = 1
-    learning_rates = [0.00001,0.000001]  #[0.0005,0.005,0.05] #[0.00001,0.000001]
+    learning_rates = [0.005, 0.0005, 0.05]  # [0.00001,0.000001]
 
     # Different training set sizes to loop over
     n_train_sizes = [2**3,2**7,2**9,2**10,2**12,2**14,2**15,2**16,2**17,2**18]
-    #n_train_sizes.reverse()
+    n_train_sizes.reverse()
 
     # If using a pre-initialized model, specify path and relevant meta
     model_init = ""
@@ -81,34 +76,27 @@ def main():
     init_gamma = 1.0
     init_mode = 'mup_no_align'
     save_model_flag = False  # Whether to save the final/initial model
-    normalize_data = True   # Whether to normalize X_train/X_test
+    normalize_data = False    # Whether to normalize X_train/X_test and y_train/y_test
 
     # ─────────────────────────────────────────────────────
     #               ITERABLE DATASETS
-    # We have multiple dataset paths and corresponding dataset names
-    # (to avoid embedding full paths in result file names).
-    # All datasets have the same dimension d and total size.
-    # We'll loop over them just like we do for hidden_size, etc.
-    # Each dataset is loaded (on rank=0) and broadcasted.
-    # Then we proceed with training on that dataset.
-    # ─────────────────────────────────────────────────────
     dataset_paths = [
-        "/home/goring/TF_spectrum/results_pretrain_testgrid/results_model_d10_hidden512_depth1_alpha0.0_20250217_042819/dataset_model_d10_hidden512_depth1_alpha0.0_20250217_042819.pt",
-        "/home/goring/TF_spectrum/results_pretrain_testgrid/results_model_d10_hidden512_depth1_alpha0.1_20250217_025153/dataset_model_d10_hidden512_depth1_alpha0.1_20250217_025153.pt",
-        "/home/goring/TF_spectrum/results_pretrain_testgrid/results_model_d10_hidden512_depth1_alpha0.25_20250217_013711/dataset_model_d10_hidden512_depth1_alpha0.25_20250217_013711.pt",
-        "/home/goring/TF_spectrum/results_pretrain_testgrid/results_model_d10_hidden512_depth1_alpha0.5_20250217_014914/dataset_model_d10_hidden512_depth1_alpha0.5_20250217_014914.pt",
-        "/home/goring/TF_spectrum/results_pretrain_testgrid/results_model_d10_hidden512_depth1_alpha1.0_20250217_013518/dataset_model_d10_hidden512_depth1_alpha1.0_20250217_013518.pt",
-        "/home/goring/TF_spectrum/results_pretrain_testgrid/results_model_d10_hidden512_depth1_alpha2.0_20250217_020342/dataset_model_d10_hidden512_depth1_alpha2.0_20250217_020342.pt",
-        "/home/goring/TF_spectrum/results_pretrain_testgrid/results_model_d10_hidden512_depth1_alpha5.0_20250217_022603/dataset_model_d10_hidden512_depth1_alpha5.0_20250217_022603.pt"
+        "/home/goring/TF_spectrum/results_pretrain_testgrid/results_2_model_d50_hidden512_depth1_alpha0.0_20250218_005030/dataset_model_d50_hidden512_depth1_alpha0.0_20250218_005030.pt",
+        "/home/goring/TF_spectrum/results_pretrain_testgrid/results_2_model_d50_hidden512_depth1_alpha0.25_20250218_004532/dataset_model_d50_hidden512_depth1_alpha0.25_20250218_004532.pt",
+        "/home/goring/TF_spectrum/results_pretrain_testgrid/results_2_model_d50_hidden512_depth1_alpha0.5_20250218_004702/dataset_model_d50_hidden512_depth1_alpha0.5_20250218_004702.pt",
+        "/home/goring/TF_spectrum/results_pretrain_testgrid/results_2_model_d50_hidden512_depth1_alpha1.0_20250218_010159/dataset_model_d50_hidden512_depth1_alpha1.0_20250218_010159.pt",
+        "/home/goring/TF_spectrum/results_pretrain_testgrid/results_2_model_d50_hidden512_depth1_alpha2.0_20250218_005200/dataset_model_d50_hidden512_depth1_alpha2.0_20250218_005200.pt",
+        "/home/goring/TF_spectrum/results_pretrain_testgrid/results_2_model_d50_hidden512_depth1_alpha5.0_20250218_005108/dataset_model_d50_hidden512_depth1_alpha5.0_20250218_005108.pt",
+        "/home/goring/TF_spectrum/results_pretrain_testgrid/results_2_model_d50_hidden512_depth1_alpha10.0_20250218_005135/dataset_model_d50_hidden512_depth1_alpha10.0_20250218_005135.pt"
     ]
     dataset_names = [
-        "a0",
-        "a01",
+         "a0",
          "a025",
-          "a05",
-           "a1",
-            "a2",
-             "a5"
+         "a05",
+         "a1",
+         "a2",
+        "a5",
+        "a10"
     ]
     # Make sure len(dataset_paths) == len(dataset_names).
 
@@ -206,7 +194,6 @@ def main():
         print(f"Process {rank} – Dataset '{ds_name}' is on device: {X_train_master.device}")
 
         # Build the list of all (dataset, model hyperparams) combos
-        # We'll include ds_path/ds_name in each combo for clarity.
         all_combinations = []
         for hidden_size in hidden_sizes:
             for depth in depths:
@@ -232,7 +219,6 @@ def main():
         ]
 
         # File for partial results (one file per rank, per dataset).
-        # We'll embed ds_name in the filename to keep them separate.
         results_file_path = os.path.join(
             base_results_dir,
             f"{ds_name}_results_{timestamp}_rank{rank}.jsonl"
@@ -260,20 +246,34 @@ def main():
             X_train = X_train_master[indices]
             y_train = y_train_master[indices]
 
-            # Optional normalization
+            # Optional normalization (for both X and y)
             if normalize_data:
+                # Normalize X
                 X_mean = X_train.mean(dim=0)
                 X_std = X_train.std(dim=0)
+                X_std = torch.clamp(X_std, min=1e-8)  # Prevent division by zero
+
+                # Normalize y
+                y_mean = y_train.mean()
+                y_std = y_train.std()
+                y_std = torch.clamp(y_std, min=1e-8)  # Prevent division by zero
+
+                # Normalize both train and test using training statistics
                 X_train_norm = (X_train - X_mean) / X_std
                 X_test_norm = (X_test - X_mean) / X_std
+
+                y_train_norm = (y_train - y_mean) / y_std
+                y_test_norm = (y_test - y_mean) / y_std
             else:
                 X_train_norm = X_train
                 X_test_norm = X_test
+                y_train_norm = y_train
+                y_test_norm = y_test
 
             # Optional label shuffling
             if shuffled:
                 shuffle_seed = hash(f"shuffle_{params['n_train']}_{ds_name}_{timestamp}_{rank}_{exp_num}")
-                y_train = shuffle_labels(y_train, seed=shuffle_seed)
+                y_train_norm = shuffle_labels(y_train_norm, seed=shuffle_seed)
                 params['shuffled'] = True
                 params['shuffle_seed'] = shuffle_seed
 
@@ -293,7 +293,7 @@ def main():
                 exp_results_dir,
                 f"train_dataset_{model_prefix}_{timestamp}_rank{rank}.pt"
             )
-            #save_dataset(X_train_norm, y_train, train_dataset_path, rank)
+            #save_dataset(X_train_norm, y_train_norm, train_dataset_path, rank)
 
             # Initialize model
             model_seed = None
@@ -333,9 +333,9 @@ def main():
             else:
                 local_checkpoint_epochs = checkpoint_epochs
 
-            # Train the model
+            # Train the model using the normalized data
             test_error, initial_train_error, final_train_error, error_history, checkpoint_models = train_and_evaluate(
-                model, X_train_norm, y_train, X_test_norm, y_test,
+                model, X_train_norm, y_train_norm, X_test_norm, y_test_norm,
                 batch_size, epochs, local_checkpoint_epochs, params['lr'],
                 weight_decay, mode, base_results_dir, timestamp, rank,
                 exp_num, model_prefix, gamma
@@ -406,4 +406,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

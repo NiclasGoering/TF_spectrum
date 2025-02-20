@@ -6,218 +6,203 @@ import os
 from datetime import datetime
 import matplotlib.pyplot as plt
 
-# ===============  Your MLP Class (FFNN.py)  ===============
+################################################################################
+# 1) Network Architecture
+#    - First layer: (input_dim -> hidden_dim)
+#    - (depth-2) hidden layers: (hidden_dim -> hidden_dim)
+#    - If depth>1, penultimate layer: (hidden_dim -> hidden_dim)
+#    - Final readout: (hidden_dim -> 1)
+################################################################################
 class DeepNN(nn.Module):
-    """
-    A very simple feed-forward network with 'depth' layers (not counting final output).
-    Penultimate dimension is 'hidden_size'. 
-    'mode' can be used if you have variants, but you can ignore that for now.
-    """
-    def __init__(self, input_dim, hidden_size, depth=1, mode='mup_no_align'):
+    def __init__(self, input_dim, hidden_dim, depth, mode='mup_no_align'):
         super().__init__()
-        self.mode = mode
-        
         layers = []
-        in_dim = input_dim
+        if depth < 1:
+            raise ValueError("depth must be >= 1")
 
-        # If depth=1, we have a single hidden layer -> penultimate -> final
-        for _ in range(depth):
-            layers.append(nn.Linear(in_dim, hidden_size, bias=True))
-            layers.append(nn.ReLU())
-            in_dim = hidden_size
-        
-        # Suppose your final output layer is also dimension 'hidden_size -> 1' or something:
-        # For "white penultimate kernel," the last layer is not relevant if we only measure penultimate features.
-        # But let's just put an output dimension=1 for demonstration:
-        layers.append(nn.Linear(hidden_size, 1, bias=True))
+        # First hidden layer: d -> hidden_dim
+        layers.append(nn.Linear(input_dim, hidden_dim, bias=True))
 
-        self.network = nn.Sequential(*layers)
+        # (depth-2) middle layers: hidden_dim -> hidden_dim
+        for _ in range(depth - 2):
+            layers.append(nn.Linear(hidden_dim, hidden_dim, bias=True))
+
+        # Penultimate hidden layer (if depth>1): hidden_dim -> hidden_dim
+        if depth > 1:
+            layers.append(nn.Linear(hidden_dim, hidden_dim, bias=True))
+
+        # Final readout layer: hidden_dim -> 1
+        layers.append(nn.Linear(hidden_dim, 1, bias=True))
+
+        self.network = nn.ModuleList(layers)
+        self.mode = mode
 
     def forward(self, x):
-        return self.network(x)
+        for layer in self.network:
+            x = layer(x)
+        return x
 
-
-# ===============  Your Utility Functions (utils2.py)  ===============
-def save_results(results, save_dir, smart_name):
-    import json
-    path = os.path.join(save_dir, f"results_{smart_name}.json")
-    with open(path, "w") as f:
-        json.dump(results, f, indent=4)
-    print(f"Saved results JSON to {path}")
-
-
-def save_model(model, model_path):
-    torch.save(model.state_dict(), model_path)
-    print(f"Saved model parameters to {model_path}")
-
-
-def save_dataset(X, y, path, rank=0):
-    # Just saving a sample dataset
-    data_dict = {
-        "X": X.cpu(),
-        "y": y.cpu(),
-        "rank": rank
-    }
-    torch.save(data_dict, path)
-    print(f"Saved dataset to {path}")
-
-
-# ===============  Modified create_target_kernel  ===============
-def create_target_kernel(feature_dim: int, alpha: float, device: torch.device):
+################################################################################
+# 2) Create Target Kernel with Effective Rank
+#    This function now accepts an 'effective_rank' parameter.
+#    For indices i < effective_rank, eigenvalue = 1/(i+1)^alpha.
+#    For the remaining indices, eigenvalue = eps (a very small number).
+#    Then we scale so that trace(T) equals effective_rank.
+################################################################################
+def create_target_kernel(feature_dim: int, alpha: float, device: torch.device,
+                           effective_rank: int = None, eps: float = 1e-8):
     """
-    Creates a target kernel matrix T ∈ ℝ^(feature_dim×feature_dim) whose eigenvalues decay as 1/(i+1)^alpha.
-    If alpha=0, we skip the random-orthogonal step and produce exactly the identity matrix.
-
-    The code ensures trace(T) = feature_dim by scaling if alpha!=0.
+    Creates a target kernel T ∈ ℝ^(feature_dim×feature_dim).
+    
+    If effective_rank is provided (< feature_dim), then the first
+    effective_rank eigenvalues decay as 1/(i+1)^alpha and the remaining
+    eigenvalues are set to eps.
+    
+    The eigenvalues are then scaled such that trace(T) equals effective_rank.
     """
-    if alpha == 0:
-        # Just produce the identity matrix
-        print("[INFO] alpha=0 -> Using pure Identity kernel.")
-        target_kernel = torch.eye(feature_dim, device=device)
-        return target_kernel, torch.sort(torch.linalg.eigvalsh(target_kernel))[0]
+    if effective_rank is None:
+        effective_rank = feature_dim
 
-    # Otherwise, do the usual method with Q, D, Q^T
-    eig_vals = np.array([1.0 / ((i + 1) ** alpha) for i in range(feature_dim)], dtype=np.float32)
-    scale = feature_dim / eig_vals.sum()
+    eig_vals = np.zeros(feature_dim, dtype=np.float32)
+    # For the effective directions, decay as 1/(i+1)^alpha.
+    for i in range(effective_rank):
+        eig_vals[i] = 1.0 / ((i + 1) ** alpha)
+    # For the remaining directions, set them to a very small value.
+    for i in range(effective_rank, feature_dim):
+        eig_vals[i] = eps
+
+    # Scale so that the trace equals effective_rank.
+    scale = effective_rank / eig_vals.sum()
     eig_vals_scaled = eig_vals * scale
-    D = torch.diag(torch.tensor(eig_vals_scaled, device=device))
 
-    # Create a random orthogonal matrix Q
+    D = torch.diag(torch.tensor(eig_vals_scaled, device=device))
+    # Create a random orthogonal matrix Q via QR decomposition.
     A = torch.randn(feature_dim, feature_dim, device=device)
     Q, _ = torch.linalg.qr(A)
-    
     target_kernel = Q @ D @ Q.T
-    target_kernel = 0.5 * (target_kernel + target_kernel.T)  # symmetrize
+    target_kernel = 0.5 * (target_kernel + target_kernel.T)  # Ensure symmetry
 
-    # Shift if needed to ensure PSD
+    # Optionally shift up if any eigenvalue is negative
     eigvals = torch.linalg.eigvalsh(target_kernel)
     if eigvals[0] < 0:
         target_kernel = target_kernel - eigvals[0] * torch.eye(feature_dim, device=device)
-    target_eigenvals = torch.sort(torch.linalg.eigvalsh(target_kernel))[0]
-    return target_kernel, target_eigenvals
+    target_eigs = torch.sort(torch.linalg.eigvalsh(target_kernel))[0]
+    return target_kernel, target_eigs
 
-
-# ===============  Smart Init  ===============
-def smart_initialize_with_input_stats_modified(
-    model: DeepNN, 
-    target_kernel: torch.Tensor, 
-    X: torch.Tensor, 
-    small_bias: float = 1e-2
-):
+################################################################################
+# 3) Smart Initialization for the Penultimate Layer Only
+################################################################################
+def smart_init_penultimate_only(model: DeepNN, target_kernel: torch.Tensor,
+                                X: torch.Tensor, smart_eps: float = 1e-2, cov_eps: float = 1e-6):
     """
-    Initializes the network as follows:
-      1. For all layers up to (but not including) the penultimate layer, use identity-like pattern.
-      2. For the penultimate layer, compute weights using input covariance and the sqrt of the target kernel
-         (or do a partial identity if you prefer).
+    Passes X through all but the last two layers to get h_in.
+    Then computes Cov(h_in) and its eigen-decomposition (with clamping),
+    and sets the penultimate layer weight to:
+        W = sqrt(T)*inv_sqrt(Cov) + smart_eps * I.
     """
-    # Identity-like on earlier layers
+    device = X.device
+    # Forward pass through all but last two layers.
+    h_in = X
     for layer in model.network[:-2]:
-        if isinstance(layer, nn.Linear):
-            in_features = layer.in_features
-            out_features = layer.out_features
-            weight = torch.zeros(out_features, in_features, device=layer.weight.device)
-            if out_features >= in_features:
-                weight[:in_features, :] = torch.eye(in_features, device=layer.weight.device)
-            else:
-                weight[:, :out_features] = torch.eye(out_features, device=layer.weight.device)
-            layer.weight.data.copy_(weight)
-            if layer.bias is not None:
-                layer.bias.data.fill_(small_bias)
-    
-    # The "penultimate" layer is the last Linear before the final.
-    penultimate_layer = model.network[-2]
-    if isinstance(penultimate_layer, nn.Linear):
-        N = X.shape[0]
-        input_cov = (X.T @ X) / N
-        eps = 1e-6
-        input_cov = input_cov + eps * torch.eye(input_cov.shape[0], device=input_cov.device)
+        h_in = layer(h_in)
         
-        # sqrt of input cov
-        vals_x, vecs_x = torch.linalg.eigh(input_cov)
-        x_sqrt = vecs_x @ torch.diag(torch.sqrt(vals_x)) @ vecs_x.T
-        x_sqrt_inv = vecs_x @ torch.diag(1.0 / torch.sqrt(vals_x)) @ vecs_x.T
-        
-        # sqrt of target kernel
-        vals_t, vecs_t = torch.linalg.eigh(target_kernel)
-        vals_t = torch.clamp(vals_t, min=1e-10)
-        t_sqrt = vecs_t @ torch.diag(torch.sqrt(vals_t)) @ vecs_t.T
+    N = h_in.shape[0]
+    dim_h = h_in.shape[1]
+    cov_h = (h_in.T @ h_in) / N + cov_eps * torch.eye(dim_h, device=device)
 
-        # W_target
-        W_target = t_sqrt @ x_sqrt_inv
+    # Eigen-decomposition with clamping.
+    evalsC, evecsC = torch.linalg.eigh(cov_h)
+    evalsC = torch.clamp(evalsC, min=smart_eps)
+    Csqrt_inv = evecsC @ torch.diag(1.0 / torch.sqrt(evalsC)) @ evecsC.T
 
-        # add small identity
-        W_target = W_target + 1e-2 * torch.eye(W_target.size(0), device=W_target.device)
-        
-        # copy to penultimate
-        penultimate_layer.weight.data.copy_(W_target.to(penultimate_layer.weight.device))
+    # For the target kernel.
+    evalsT, evecsT = torch.linalg.eigh(target_kernel)
+    evalsT = torch.clamp(evalsT, min=smart_eps)
+    Tsqrt = evecsT @ torch.diag(torch.sqrt(evalsT)) @ evecsT.T
 
-        if penultimate_layer.bias is not None:
-            penultimate_layer.bias.data.zero_()
-    
+    penultimate = model.network[-2]
+    if not isinstance(penultimate, nn.Linear):
+        print("Warning: penultimate layer is not Linear; skipping smart init.")
+        return model
+
+    out_f, in_f = penultimate.weight.shape  # weight shape: [out_features, in_features]
+    if out_f != in_f:
+        print(f"Warning: penultimate layer is not square ({out_f} vs {in_f}); skipping smart init.")
+        return model
+    if out_f != target_kernel.shape[0]:
+        print("Warning: penultimate dimension does not match target kernel dimension.")
+        return model
+    if in_f != dim_h:
+        print(f"Warning: mismatch between penultimate in_features={in_f} and h_in dimension={dim_h}.")
+        return model
+
+    W_target = Tsqrt @ Csqrt_inv + smart_eps * torch.eye(out_f, device=device)
+    penultimate.weight.data.copy_(W_target)
+    if penultimate.bias is not None:
+        penultimate.bias.data.zero_()
+
     return model
 
-
-# ===============  LSUV  ===============
-def lsuv_init(model: DeepNN, X: torch.Tensor, needed_std: float = 1.0, tol: float = 0.1, max_iter: int = 10):
+################################################################################
+# 4) LSUV Initialization (Optional)
+################################################################################
+def lsuv_init(model: nn.Module, X: torch.Tensor, needed_std: float = 1.0,
+              tol: float = 0.1, max_iter: int = 10):
     model.eval()
     for i, layer in enumerate(model.network):
         if isinstance(layer, nn.Linear):
             outputs = []
-            def hook(module, inp, outp):
+            def hook(_, __, outp):
                 outputs.append(outp)
-            hook_handle = layer.register_forward_hook(hook)
-            
-            # forward pass
+            h = layer.register_forward_hook(hook)
+
             _ = model(X)
             if len(outputs) == 0:
-                hook_handle.remove()
+                h.remove()
                 continue
-            
-            act = outputs[0]
-            std = act.std().item()
+            std_now = outputs[0].std().item()
             count = 0
-            while abs(std - needed_std) > tol and count < max_iter:
-                scaling = needed_std / (std + 1e-8)
-                layer.weight.data.mul_(scaling)
+            while abs(std_now - needed_std) > tol and count < max_iter:
+                scale = needed_std / (std_now + 1e-8)
+                layer.weight.data.mul_(scale)
                 outputs.clear()
                 _ = model(X)
-                act = outputs[0]
-                std = act.std().item()
+                std_now = outputs[0].std().item()
                 count += 1
-            print(f"LSUV init for layer {i}: final std = {std:.4f} after {count} iterations")
-            hook_handle.remove()
+
+            print(f"LSUV init for layer {i}: final std = {std_now:.4f} after {count} iterations")
+            h.remove()
     model.train()
     return model
 
-
-# ===============  Kernel Loss  ===============
-def kernel_loss(
-    model: DeepNN, X: torch.Tensor, target_kernel: torch.Tensor,
-    lambda_eig: float = 1.0, use_log: bool = True,
-    top_k: int = 20, lambda_top: float = 1e4,
-    frob_scale: float = 10.0, eig_scale: float = 1.0
-):
-    # penultimate features
-    features = X
+################################################################################
+# 5) Kernel Loss with Rank Preservation Penalty
+################################################################################
+def kernel_loss(model: nn.Module, X: torch.Tensor, target_kernel: torch.Tensor,
+                lambda_eig: float = 1.0, use_log: bool = True,
+                top_k: int = 20, lambda_top: float = 1e4,
+                frob_scale: float = 1.0, eig_scale: float = 1.0,
+                rank_preservation_weight: float = 0.0):
+    """
+    Computes loss comparing the penultimate feature covariance to target_kernel.
+    In addition to Frobenius and eigenvalue (and top-k) losses, a rank preservation
+    penalty is added: -sum(log(eigenvalues)) (to maximize the determinant).
+    """
+    feats = X
     for layer in model.network[:-1]:
-        features = layer(features)
-    N = features.shape[0]
-    C_norm = features.T @ features / N
+        feats = layer(feats)
+    N = feats.shape[0]
+    C_norm = feats.T @ feats / N
 
-    # small reg
     I = torch.eye(C_norm.shape[0], device=C_norm.device)
-    C_norm_reg = C_norm + 1e-6 * I
+    C_reg = C_norm + 1e-6 * I
 
-    # Frobenius difference
-    frob_diff = torch.norm(C_norm_reg - target_kernel, p='fro')**2
+    frob_diff = torch.norm(C_reg - target_kernel, p='fro')**2
     target_norm_sq = torch.norm(target_kernel, p='fro')**2 + 1e-8
-    loss_frob = frob_diff / target_norm_sq
-    loss_frob = frob_scale * loss_frob
+    loss_frob = frob_scale * (frob_diff / target_norm_sq)
 
-    # eigenvalue difference
-    eig_C = torch.linalg.eigvalsh(C_norm)
+    eig_C = torch.linalg.eigvalsh(C_reg)
     eig_T = torch.linalg.eigvalsh(target_kernel)
-    
     if use_log:
         eps = 1e-8
         eig_C = torch.clamp(eig_C, min=eps)
@@ -225,197 +210,230 @@ def kernel_loss(
         loss_eig = torch.sum((torch.log(eig_C) - torch.log(eig_T))**2)
     else:
         loss_eig = torch.sum((eig_C - eig_T)**2)
-
     loss_eig = eig_scale * loss_eig
-    
-    # top-k penalty
-    top_eig_loss = torch.mean((eig_C[-top_k:] - eig_T[-top_k:])**2)
 
+    top_eig_loss = torch.mean((eig_C[-top_k:] - eig_T[-top_k:])**2)
     total_loss = loss_frob + lambda_eig * loss_eig + lambda_top * top_eig_loss
+
+    if rank_preservation_weight > 0.0:
+        # Clamp eigenvalues to avoid log(0)
+        eig_C = torch.clamp(eig_C, min=1e-12)
+        rank_penalty = -torch.sum(torch.log(eig_C))
+        total_loss += rank_preservation_weight * rank_penalty
+
     return total_loss, loss_frob, loss_eig, top_eig_loss
 
-
-# ===============  Train Kernel  ===============
-def train_kernel_modified(
-    model: DeepNN, X: torch.Tensor, target_kernel: torch.Tensor, 
-    epochs: int = 5000, lr: float = 1e-3, 
-    lambda_eig: float = 10.0, use_log: bool = True,
-    top_k: int = 5, lambda_top: float = 100.0
-):
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=200, T_mult=2)
-
+################################################################################
+# 6) Training Procedure
+################################################################################
+def train_kernel_modified(model: nn.Module, X: torch.Tensor, target_kernel: torch.Tensor,
+                          epochs: int = 5000, lr: float = 1e-3,
+                          lambda_eig: float = 10.0, use_log: bool = True,
+                          top_k: int = 5, lambda_top: float = 100.0,
+                          rank_preservation_weight: float = 0.0):
+    optimizer = optim.AdamW(model.parameters(), lr=lr)
+    scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=200, T_mult=2)
+    
     for epoch in range(epochs):
         optimizer.zero_grad()
-        loss, loss_frob, loss_eig_val, top_eig_loss = kernel_loss(
+        loss, l_frob, l_eig, l_top = kernel_loss(
             model, X, target_kernel,
             lambda_eig=lambda_eig,
             use_log=use_log,
             top_k=top_k,
-            lambda_top=lambda_top
+            lambda_top=lambda_top,
+            rank_preservation_weight=rank_preservation_weight
         )
         loss.backward()
         optimizer.step()
         scheduler.step(epoch + 1)
-        
+
         if epoch % 50 == 0:
-            print(f"Epoch {epoch:4d} | Total Loss: {loss.item():.4e} "
-                  f"| Frobenius: {loss_frob.item():.4e} "
-                  f"| Eig Loss: {loss_eig_val.item():.4e} "
-                  f"| Top-{top_k} Loss: {top_eig_loss.item():.4e}")
+            print(f"Epoch {epoch:4d} | Loss: {loss.item():.4e} | "
+                  f"Frob: {l_frob.item():.4e} | Eig: {l_eig.item():.4e} | Top-{top_k}: {l_top.item():.4e}")
     return model
 
-
-# ===============  Compute last hidden kernel (unnormalized)  ===============
-def compute_last_hidden_kernel_unnormalized_spectrum(model: DeepNN, X: torch.Tensor):
+################################################################################
+# 7) Compute the Unnormalized Penultimate Kernel Spectrum
+################################################################################
+def compute_last_hidden_kernel_unnormalized_spectrum(model: nn.Module, X: torch.Tensor):
     with torch.no_grad():
-        features = X
+        feats = X
         for layer in model.network[:-1]:
-            features = layer(features)
-        K_unnorm = features.T @ features
-        eigenvalues = torch.linalg.eigvalsh(K_unnorm)
-    return eigenvalues
+            feats = layer(feats)
+        K_unnorm = feats.T @ feats
+        eivals = torch.linalg.eigvalsh(K_unnorm)
+    return eivals
 
+################################################################################
+# 8) Utility Functions to Save Results, Model, and Dataset
+################################################################################
+def save_results(results, save_dir, smart_name):
+    import json
+    results_path = os.path.join(save_dir, f"results_{smart_name}.json")
+    with open(results_path, 'w') as f:
+        json.dump(results, f, indent=2)
 
-# ===============  MAIN  ===============
+def save_model(model, path):
+    torch.save(model.state_dict(), path)
+
+def save_dataset(X, y, path, rank):
+    torch.save({'X': X.cpu(), 'y': y.cpu(), 'rank': rank}, path)
+
+################################################################################
+# 9) Main Script
+################################################################################
 def main():
-    # --- Hyperparameters ---
-    d = 10                       # Input dimension
-    hidden_size = 512           # Penultimate dimension
-    depth = 1                   # Just one hidden layer
+    # Hyperparameters
+    d = 30                      # Input dimension
+    hidden_size = 256           # Hidden dimension (for square penultimate layer)
+    depth = 1                   # Architecture: (d->hidden), then (hidden->hidden), then (hidden->1)
     train_size = 300000         # Number of training samples
     mode = 'mup_no_align'
-    alpha = 0.0                 # <-- If 0.0, we do a pure identity kernel in create_target_kernel
-    lambda_eig = 10.0
-    use_log = False
-    epochs = 40000
+    alpha = 5.0                 # Target kernel decay exponent
+    lambda_eig = 5.0
+    use_log = True
+    epochs = 5000
     lr = 1e-2
-    top_k = 10
-    lambda_top = 2.0  # set to 0 if you don't want top-k penalty
+    top_k = 25
+    lambda_top = 50.0
+    rank = 0
+
+    # Additional hyperparameters
+    smart_eps = 1e-6            # Damping epsilon for smart initialization and eigenvalue clamping
+    do_lsuv = False              # Whether to apply LSUV initialization
+    rank_preservation_weight = 1.0  # Weight for rank preservation penalty
+    # Set effective_rank for the target kernel to d (so d eigenvalues decay, rest nearly zero)
+    effective_rank = d
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
 
-    # Create the network
+    # 1) Build the network (using default PyTorch initialization)
     model = DeepNN(d, hidden_size, depth, mode=mode).to(device)
+    print("\n=== Layer Shapes ===")
+    for i, layer in enumerate(model.network):
+        if isinstance(layer, nn.Linear):
+            print(f" Layer {i}: weight shape = {layer.weight.shape}")
 
-    # Create target kernel
-    target_kernel_norm, target_eigenvalues_norm = create_target_kernel(hidden_size, alpha, device)
-    print("\n[Target kernel eigenvalues (ascending)]")
-    print(target_eigenvalues_norm.detach().cpu().numpy())
+    # 2) Create target kernel for dimension 'hidden_size' with effective_rank = d
+    target_kernel_norm, target_eigs_norm = create_target_kernel(hidden_size, alpha, device,
+                                                                 effective_rank=effective_rank,
+                                                                 eps=1e-8)
+    print("\nTarget kernel eigenvalues (ascending):")
+    print(target_eigs_norm.detach().cpu().numpy())
 
-    # Generate input data
+    # 3) Generate input data X ~ N(0, I)
     X = torch.randn(train_size, d, device=device)
-    print(f"\nX shape: {X.shape}, e.g. {train_size} samples in {d}-dim")
+    input_cov = (X.T @ X) / train_size
+    input_eigs = torch.linalg.eigvalsh(input_cov)
+    print("\nInput covariance eigenvalues (ascending):")
+    print(input_eigs.detach().cpu().numpy())
 
-    # Inspect input covariance
-    input_stats = (X.T @ X) / train_size
-    input_eigvals = torch.linalg.eigvalsh(input_stats)
-    print("\n[Input covariance eigenvalues (ascending)]")
-    print(input_eigvals.detach().cpu().numpy())
+    # 4) Apply smart initialization for the penultimate layer
+    print("\nSmart-initializing the penultimate layer ...")
+    model = smart_init_penultimate_only(model, target_kernel_norm, X, smart_eps=smart_eps)
 
-    # Smart initialization
-    print("\nPerforming smart initialization with input statistics...")
-    model = smart_initialize_with_input_stats_modified(model, target_kernel_norm, X, small_bias=1e-2)
+    # 5) Optionally apply LSUV initialization
+    if do_lsuv:
+        print("\nApplying LSUV initialization ...")
+        model = lsuv_init(model, X, needed_std=1.0, tol=0.1, max_iter=10)
+    else:
+        print("\nSkipping LSUV initialization.")
 
-    # LSUV init
-    print("\nApplying LSUV initialization...")
-    model = lsuv_init(model, X, needed_std=1.0, tol=0.1, max_iter=10)
-
-    # Check initial kernel
+    # 6) Inspect initial penultimate kernel spectrum
     with torch.no_grad():
-        features = X
+        feats_init = X
         for layer in model.network[:-1]:
-            features = layer(features)
-        initial_kernel = (features.T @ features) / train_size
-        initial_eigvals = torch.linalg.eigvalsh(initial_kernel)
+            feats_init = layer(feats_init)
+        init_kernel = (feats_init.T @ feats_init) / train_size
+        init_eigs = torch.linalg.eigvalsh(init_kernel)
+    print("\nInitial kernel eigenvalues (ascending):")
+    print(init_eigs.detach().cpu().numpy())
 
-    print("\n[Initial kernel eigenvalues (after init, ascending)]")
-    print(initial_eigvals.detach().cpu().numpy())
-
-    # Train
-    print("\n[Starting training ...]")
+    # 7) Train the network with rank preservation penalty
+    print("\nStarting training ...")
     model = train_kernel_modified(
-        model, X, target_kernel_norm, 
+        model, X, target_kernel_norm,
         epochs=epochs, lr=lr,
-        lambda_eig=lambda_eig, use_log=use_log,
-        top_k=top_k, lambda_top=lambda_top
+        lambda_eig=lambda_eig,
+        use_log=use_log,
+        top_k=top_k,
+        lambda_top=lambda_top,
+        rank_preservation_weight=rank_preservation_weight
     )
 
-    # Final spectrum
-    # (For alpha=0, target is literally Identity => unnormalized target = I * train_size)
-    target_eigenvalues_unnorm = target_eigenvalues_norm * train_size
-    last_hidden_eigenvalues_unnorm = compute_last_hidden_kernel_unnormalized_spectrum(model, X)
+    # 8) Compute final (unnormalized) penultimate kernel spectrum
+    targ_eigs_unnorm = target_eigs_norm * train_size
+    penult_eigs_unnorm = compute_last_hidden_kernel_unnormalized_spectrum(model, X)
 
-    target_spec = np.sort(target_eigenvalues_unnorm.detach().cpu().numpy())[::-1]
-    last_hidden_spec = np.sort(last_hidden_eigenvalues_unnorm.detach().cpu().numpy())[::-1]
+    targ_spec = np.sort(targ_eigs_unnorm.detach().cpu().numpy())[::-1]
+    penult_spec = np.sort(penult_eigs_unnorm.detach().cpu().numpy())[::-1]
 
-    # Save plots, etc.
+    # 9) Save results and plot the spectrum
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    smart_name = f"model_d{d}_hidden{hidden_size}_depth{depth}_alpha{alpha}_{timestamp}"
+    smart_name = f"model_d{d}_hid{hidden_size}_depth{depth}_alpha{alpha}_{timestamp}"
     save_dir = os.path.join("/home/goring/TF_spectrum/results_pretrain_testgrid", f"results_{smart_name}")
     os.makedirs(save_dir, exist_ok=True)
 
-    plt.figure(figsize=(10, 6))
-    plt.loglog(np.arange(1, len(target_spec) + 1), target_spec, 'o-', label='Target Kernel Spectrum', markersize=4)
-    plt.loglog(np.arange(1, len(last_hidden_spec) + 1), last_hidden_spec, 's-', label='Last Hidden Kernel Spectrum', markersize=4)
+    plt.figure(figsize=(10,6))
+    plt.loglog(range(1, len(targ_spec)+1), targ_spec, 'o-', label='Target Spectrum', markersize=4)
+    plt.loglog(range(1, len(penult_spec)+1), penult_spec, 's-', label='Penultimate Spectrum', markersize=4)
     plt.xlabel('Index')
     plt.ylabel('Eigenvalue')
-    plt.title('Kernel Spectrum Comparison (Log-Log)')
+    plt.title('Penultimate Kernel Spectrum (Log-Log)')
     plt.legend()
     plt.grid(True, which="both", ls="-", alpha=0.2)
     plot_path = os.path.join(save_dir, f"spectrum_plot_{smart_name}.png")
     plt.savefig(plot_path, dpi=300, bbox_inches='tight')
     plt.close()
-    print(f"\nSaved log-log spectrum plot to {plot_path}")
+    print(f"\nSaved spectrum plot to {plot_path}")
 
     results = {
-        'hyperparameters': {
+        'hyperparams': {
             'input_dim': d,
-            'hidden_size': hidden_size,
+            'hidden_dim': hidden_size,
             'depth': depth,
             'train_size': train_size,
-            'mode': mode,
             'alpha': alpha,
             'lambda_eig': lambda_eig,
             'use_log': use_log,
             'epochs': epochs,
             'learning_rate': lr,
             'top_k': top_k,
-            'lambda_top': lambda_top
+            'lambda_top': lambda_top,
+            'smart_eps': smart_eps,
+            'do_lsuv': do_lsuv,
+            'rank_preservation_weight': rank_preservation_weight,
+            'effective_rank': effective_rank
         },
-        'unnormalized_target_spectrum': target_spec.tolist(),
-        'unnormalized_last_hidden_spectrum': last_hidden_spec.tolist(),
-        'initial_kernel_spectrum': initial_eigvals.detach().cpu().numpy().tolist(),
-        'input_covariance_spectrum': input_eigvals.detach().cpu().numpy().tolist()
+        'target_spectrum_unnorm': targ_spec.tolist(),
+        'penult_spectrum_unnorm': penult_spec.tolist(),
+        'initial_kernel_spectrum': init_eigs.detach().cpu().numpy().tolist(),
+        'input_cov_eigs': input_eigs.detach().cpu().numpy().tolist()
     }
     save_results([results], save_dir, smart_name)
-    print("Saved results (hyperparameters and spectra).")
+    print("Saved JSON results.")
 
-    # Save dataset
     with torch.no_grad():
-        y = model(X)
+        y_out = model(X)
     dataset_path = os.path.join(save_dir, f"dataset_{smart_name}.pt")
-    save_dataset(X, y, dataset_path, rank=0)
+    save_dataset(X, y_out, dataset_path, rank)
 
-    # Save target kernel
-    target_kernel_path = os.path.join(save_dir, f"target_kernel_{smart_name}.pt")
-    torch.save(target_kernel_norm.detach().cpu(), target_kernel_path)
-    print(f"Saved target kernel to {target_kernel_path}")
+    tk_path = os.path.join(save_dir, f"target_kernel_{smart_name}.pt")
+    torch.save(target_kernel_norm.detach().cpu(), tk_path)
+    print(f"Saved target kernel to {tk_path}")
 
-    # Save model
     model_path = os.path.join(save_dir, f"model_{smart_name}.pt")
     save_model(model, model_path)
     print(f"Saved model to {model_path}")
 
-    # Final summary
-    print("\n[Final spectrum comparison summary]")
-    print(f"Target spectrum range: [{target_spec[-1]:.2e}, {target_spec[0]:.2e}]")
-    print(f"Achieved spectrum range: [{last_hidden_spec[-1]:.2e}, {last_hidden_spec[0]:.2e}]")
-    cond_target = (target_spec[0] / target_spec[-1]) if target_spec[-1]!=0 else float('inf')
-    cond_achieved = (last_hidden_spec[0] / last_hidden_spec[-1]) if last_hidden_spec[-1]!=0 else float('inf')
-    print(f"Condition numbers - Target: {cond_target:.2e}, Achieved: {cond_achieved:.2e}")
-
+    print("\nFinal spectrum comparison summary:")
+    print(f"Target range: [{targ_spec[-1]:.2e}, {targ_spec[0]:.2e}]")
+    print(f"Penultimate range: [{penult_spec[-1]:.2e}, {penult_spec[0]:.2e}]")
+    cond_target = targ_spec[0] / (targ_spec[-1] + 1e-12)
+    cond_achieved = penult_spec[0] / (penult_spec[-1] + 1e-12)
+    print(f"Condition numbers => Target: {cond_target:.2e}, Penultimate: {cond_achieved:.2e}")
 
 if __name__ == "__main__":
     main()

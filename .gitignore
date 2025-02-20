@@ -1,3 +1,5 @@
 results/
 train_results/
 results_pretrain_testgrid/
+results_testgrid/
+results_pretrain_testgrid_2/
