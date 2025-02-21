@@ -4,58 +4,70 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from typing import List, Dict, Tuple
-import random
-from functools import partial
-import json
-from datetime import datetime
 import os
-from mpi4py import MPI
+from functools import partial
+from datetime import datetime
 
 from FFNN import DeepNN
-from utils2 import save_dataset, save_results, save_model
 
-# Ensure prints flush immediately
 print = partial(print, flush=True)
 
-def evaluate_error_in_batches(model: nn.Module, X: torch.Tensor, y: torch.Tensor, eval_batch_size: int = 1024) -> float:
+def evaluate_error_in_batches(
+    model: nn.Module, 
+    X: torch.Tensor, 
+    y: torch.Tensor, 
+    eval_batch_size: int = 1024
+) -> float:
     """
-    Evaluate the model's mean squared error on the provided data in batches.
-    We accumulate the squared error to avoid storing huge tensors.
+    Evaluate mean squared error on the provided data in batches.
     """
     model.eval()
-    total_error = 0.0
+    total_err = 0.0
     total_count = 0
     with torch.no_grad():
         for i in range(0, X.size(0), eval_batch_size):
             batch_X = X[i:i+eval_batch_size]
             batch_y = y[i:i+eval_batch_size]
             batch_preds = model(batch_X)
-            batch_error = torch.sum((batch_preds - batch_y) ** 2).item()
-            total_error += batch_error
+            total_err += torch.sum((batch_preds - batch_y) ** 2).item()
             total_count += batch_X.size(0)
-    return total_error / total_count
+    return total_err / total_count
 
-def create_layer_specific_optimizer(model: DeepNN, base_lr: float, weight_decay: float):
-    """Create optimizer with layer-specific learning rates."""
-    if model.mode not in ['spectral', 'mup_no_align']:
-        return optim.SGD(model.parameters(), lr=base_lr, weight_decay=weight_decay)
-    
+def create_layer_specific_optimizer(
+    model: DeepNN, 
+    base_lr: float, 
+    weight_decay: float
+):
+    """
+    Create an Adam optimizer with layer-specific learning rates:
+      - For 'mup_no_align', each layer has a different scaling from the FFNN.
+      - For 'standard', you might have a simpler set of 1.0s or custom multipliers 
+        (embed_lr_scale, hidden_lr_scale, readout_lr_scale).
+    """
     layer_lrs = model.get_layer_learning_rates(base_lr)
-    param_groups = []
+
+    # We'll place all parameters in one param-group for simplicity:
+    optimizer = optim.Adam(model.parameters(), lr=base_lr, weight_decay=weight_decay)
+
+    # Map parameter-names to the scaling factor from layer_lrs
+    param_scale = {}
     linear_layer_idx = 0
     for name, param in model.named_parameters():
         if 'weight' in name or 'bias' in name:
-            param_groups.append({
-                'params': [param],
-                'lr': layer_lrs[linear_layer_idx // 2],
-                'weight_decay': weight_decay
-            })
+            # We increment linear_layer_idx by 1 every time we finish both 
+            # the weight and the bias of a layer. A simple trick:
+            scale_factor = layer_lrs[linear_layer_idx // 2]
+            param_scale[name] = scale_factor
             if 'bias' in name:
                 linear_layer_idx += 1
-    if model.mode == 'mup_no_align':
-        return optim.Adam(param_groups, lr=base_lr)
-    else:
-        return optim.SGD(param_groups, lr=base_lr)
+
+    def grad_scale_fn():
+        # Multiply each parameter's gradient by its layer-specific factor
+        for name, param in model.named_parameters():
+            if param.grad is not None and name in param_scale:
+                param.grad.mul_(param_scale[name])
+
+    return optimizer, grad_scale_fn
 
 def train_and_evaluate(
     model: nn.Module,
@@ -74,16 +86,13 @@ def train_and_evaluate(
     rank: int,
     experiment_num: int,
     model_prefix: str,
-    gamma: float = 1.0,
-    eval_interval: int = 10,       # Evaluation performed every 10 epochs
-    eval_print_interval: int = 100, # Print evaluation every 10 epochs
-    eval_batch_size: int = 1024     # Batch size for evaluation to avoid OOM
+    eval_interval: int = 10,
+    eval_print_interval: int = 100,
+    eval_batch_size: int = 1024
 ) -> Tuple[float, float, float, dict, Dict[int, nn.Module]]:
     """
-    Train the neural network and save checkpoints at specified epochs.
-    Evaluates training error (in eval mode) on a fixed subset of the training data (max 20k examples).
+    Train the model with Adam + (optionally) layer-specific LR scaling.
     """
-    # Ensure everything is on the proper device.
     device = next(model.parameters()).device
     model = model.to(device)
     X_train = X_train.to(device)
@@ -91,87 +100,97 @@ def train_and_evaluate(
     X_test = X_test.to(device)
     y_test = y_test.to(device)
     
-    optimizer = create_layer_specific_optimizer(model, lr, weight_decay)
+    optimizer, grad_scale_fn = create_layer_specific_optimizer(model, lr, weight_decay)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs)
-    
-    # Evaluate initial training error on a subset (max 20k)
+
+    # Evaluate initial errors
     subset_size = min(20000, len(X_train))
-    X_train_subset = X_train[:subset_size]
-    y_train_subset = y_train[:subset_size]
-    initial_train_error = evaluate_error_in_batches(model, X_train_subset, y_train_subset, eval_batch_size)
-    initial_test_error  = evaluate_error_in_batches(model, X_test, y_test, eval_batch_size)
-    
-    print("Initial Errors:")
-    print(f"   Train Error (eval subset of training data): {initial_train_error:.6f}")
-    print(f"   Test Error: {initial_test_error:.6f}")
-    
+    train_error_init = evaluate_error_in_batches(model, X_train[:subset_size], y_train[:subset_size], eval_batch_size)
+    test_error_init  = evaluate_error_in_batches(model, X_test, y_test, eval_batch_size)
+
+    print(f"Initial Errors:")
+    print(f"   Train Error (subset): {train_error_init:.6f}")
+    print(f"   Test Error:           {test_error_init:.6f}")
+
     error_history = {
         'train_errors': [],
         'test_errors': [],
         'epochs': []
     }
-    
-    best_test_error = initial_test_error
+    best_test_error = test_error_init
     checkpoint_epochs = sorted(checkpoint_epochs)
-    next_checkpoint_idx = 0
+    next_ckpt_idx = 0
     
     for epoch in range(epochs):
         model.train()
-        # Standard training loop
         for i in range(0, len(X_train), batch_size):
             batch_X = X_train[i:i+batch_size]
             batch_y = y_train[i:i+batch_size]
-            
+
             optimizer.zero_grad()
             output = model(batch_X)
             loss = torch.mean((output - batch_y) ** 2)
             loss.backward()
+
+            # Scale grads for each layer (if relevant):
+            grad_scale_fn()
+
+            # Optional: gradient clipping
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+
             optimizer.step()
         
         scheduler.step()
-        
-        # Every eval_interval epochs, compute the training error in eval mode on a fixed subset (max 20k)
+
+        # Periodically evaluate
         if epoch % eval_interval == 0 or epoch == epochs - 1:
             model.eval()
-            subset_size = min(20000, len(X_train))
-            X_train_subset = X_train[:subset_size]
-            y_train_subset = y_train[:subset_size]
-            eval_train_error = evaluate_error_in_batches(model, X_train_subset, y_train_subset, eval_batch_size)
+            train_error = evaluate_error_in_batches(
+                model, X_train[:subset_size], y_train[:subset_size], eval_batch_size
+            )
             test_error = evaluate_error_in_batches(model, X_test, y_test, eval_batch_size)
             best_test_error = min(best_test_error, test_error)
-            
-            error_history['train_errors'].append(eval_train_error)
+
+            error_history['train_errors'].append(train_error)
             error_history['test_errors'].append(test_error)
             error_history['epochs'].append(epoch)
-            
+
             if epoch % eval_print_interval == 0 or epoch == epochs - 1:
                 print(f"Epoch {epoch}:")
-                print(f"   Training Error (eval subset): {eval_train_error:.6f}")
-                print(f"   Test Error: {test_error:.6f} (Best so far: {best_test_error:.6f})")
-        
-        # Save checkpoint if needed.
-        if next_checkpoint_idx < len(checkpoint_epochs) and epoch == checkpoint_epochs[next_checkpoint_idx]:
-            checkpoint_model = DeepNN(model.input_dim, model.hidden_size, model.depth, 
-                                      mode=model.mode, gamma=model.gamma).to(device)
+                print(f"   Training Error (subset): {train_error:.6f}")
+                print(f"   Test Error:              {test_error:.6f} (Best: {best_test_error:.6f})")
+
+        # Save checkpoint if specified
+        if (next_ckpt_idx < len(checkpoint_epochs) 
+            and epoch == checkpoint_epochs[next_ckpt_idx]):
+            checkpoint_model = DeepNN(
+                model.input_dim,
+                model.hidden_size,
+                model.depth,
+                mode=model.mode,
+                embed_lr_scale=model.embed_lr_scale,
+                hidden_lr_scale=model.hidden_lr_scale,
+                readout_lr_scale=model.readout_lr_scale
+            ).to(device)
             checkpoint_model.load_state_dict(model.state_dict())
-            checkpoint_path = os.path.join(
-                results_dir, 
+
+            ckpt_path = os.path.join(
+                results_dir,
                 f'experiment{experiment_num}',
                 f'checkpoint_model_{model_prefix}_epoch{epoch}_{timestamp}_rank{rank}.pt'
             )
-            torch.save(checkpoint_model.state_dict(), checkpoint_path)
-            next_checkpoint_idx += 1
-    
-    # Final evaluation on the same training subset
+            torch.save(checkpoint_model.state_dict(), ckpt_path)
+            next_ckpt_idx += 1
+
+    # Final evaluation
     model.eval()
-    subset_size = min(20000, len(X_train))
-    X_train_subset = X_train[:subset_size]
-    y_train_subset = y_train[:subset_size]
-    final_train_error = evaluate_error_in_batches(model, X_train_subset, y_train_subset, eval_batch_size)
+    final_train_error = evaluate_error_in_batches(
+        model, X_train[:subset_size], y_train[:subset_size], eval_batch_size
+    )
     final_test_error  = evaluate_error_in_batches(model, X_test, y_test, eval_batch_size)
-    
-    return best_test_error, initial_train_error, final_train_error, error_history, {}
+
+    return best_test_error, train_error_init, final_train_error, error_history, {}
+
 
 def shuffle_labels(y_train: torch.Tensor, seed: int = None) -> torch.Tensor:
     """Shuffle the training labels randomly."""
@@ -185,7 +204,7 @@ def get_parameter_combinations(hidden_sizes, depths, n_train_sizes, learning_rat
     combinations = []
     if not isinstance(gammas, (list, tuple)):
         gammas = [gammas]
-        
+
     for hidden_size in hidden_sizes:
         for depth in depths:
             for n_train in n_train_sizes:

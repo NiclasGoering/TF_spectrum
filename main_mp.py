@@ -17,7 +17,13 @@ from FFNN import DeepNN
 from utils2 import save_dataset, save_results, save_model
 from train2 import train_and_evaluate, shuffle_labels
 
+# Ensure prints flush immediately
+print = partial(print, flush=True)
+
 def main():
+    # ────────────── Set Restart Checkpoint (None for new run) ──────────────
+    restart_checkpoint = None  # Set to a timestamp string to restart from that checkpoint.
+
     # ────────────── MPI and Device Setup ──────────────
     comm = MPI.COMM_WORLD
     rank = comm.Get_rank()
@@ -37,13 +43,16 @@ def main():
         print(f"[Rank 0] Master process using device: {device}")
     print(f"[Rank {rank}] Using device: {device}")
 
+    # Enable benchmark mode for CuDNN (faster if input shapes are consistent)
+    torch.backends.cudnn.benchmark = True
+
+    # If you need deterministic, you can comment out the next line:
+    torch.backends.cudnn.deterministic = False
+
     torch.set_default_dtype(torch.float32)
-    # For reproducibility. If you can relax determinism for speed, set benchmark=True.
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
 
     # ────────────── Experiment and Hyperparameter Parameters ──────────────
-    experiment_name = "d30_hidden256_standard_depth_mpi"
+    experiment_name = "d30_hidden256_mup_2102"
     d = 30
 
     hidden_sizes = [2**7, 2**8, 2**9, 2**11]
@@ -53,16 +62,16 @@ def main():
 
     n_test = 20000
     batch_size = 128
-    epochs = 3000
+    epochs = 5000
     checkpoint_epochs = []  # e.g. [100, 1000]
     weight_decay = 1e-4
-    mode = 'standard'
+    mode = 'mup_no_align'
     shuffled = False
     gamma = 1.0
     num_experiments = 1
     learning_rates = [0.005, 0.0005, 0.05]
 
-    n_train_sizes = [2**3, 2**7, 2**9, 2**10, 2**12, 2**14, 2**15, 2**16, 2**17,2**18]
+    n_train_sizes = [2**3, 2**7, 2**9, 2**10, 2**12, 2**14, 2**15, 2**16, 2**17, 2**18]
     n_train_sizes.reverse()
 
     # If using a pre-initialized model.
@@ -79,12 +88,9 @@ def main():
         "/home/goring/TF_spectrum/results_pretrain_testgrid_2/results_2_model_d30_hidden256_depth1_alpha0.0_20250219_112539/dataset_model_d30_hidden256_depth1_alpha0.0_20250219_112539.pt",
         "/home/goring/TF_spectrum/results_pretrain_testgrid_2/results_2_model_d30_hidden256_depth1_alpha0.25_20250219_104955/dataset_model_d30_hidden256_depth1_alpha0.25_20250219_104955.pt",
         "/home/goring/TF_spectrum/results_pretrain_testgrid_2/results_2_model_d30_hidden256_depth1_alpha0.5_20250219_105002/dataset_model_d30_hidden256_depth1_alpha0.5_20250219_105002.pt",
-        "/home/goring/TF_spectrum/results_pretrain_testgrid_2/results_2_model_d30_hidden256_depth1_alpha1.0_20250219_105445/dataset_model_d30_hidden256_depth1_alpha1.0_20250219_105445.pt",
-        "/home/goring/TF_spectrum/results_pretrain_testgrid_2/results_2_model_d30_hidden256_depth1_alpha2.0_20250219_110709/dataset_model_d30_hidden256_depth1_alpha2.0_20250219_110709.pt",
-     "/home/goring/TF_spectrum/results_pretrain_testgrid_2/results_2_model_d30_hidden256_depth1_alpha5.0_20250219_105903/dataset_model_d30_hidden256_depth1_alpha5.0_20250219_105903.pt", 
-     "/home/goring/TF_spectrum/results_pretrain_testgrid_2/results_2_model_d30_hidden256_depth1_alpha10.0_20250219_112240/dataset_model_d30_hidden256_depth1_alpha10.0_20250219_112240.pt"  
+        "/home/goring/TF_spectrum/results_pretrain_testgrid_2/results_2_model_d30_hidden256_depth1_alpha1.0_20250219_105445/dataset_model_d30_hidden256_depth1_alpha1.0_20250219_105445.pt"
     ]
-    dataset_names = ["a0", "a025", "a05", "a1", "a2", "a5", "a10"]
+    dataset_names = ["a0", "a025", "a05", "a1"]
 
     # ────────────── Base Results Directory and Timestamp ──────────────
     base_results_dir = f"/home/goring/TF_spectrum/results_testgrid/{experiment_name}"
@@ -92,9 +98,20 @@ def main():
         os.makedirs(base_results_dir, exist_ok=True)
     comm.Barrier()  # Ensure directory exists for all processes.
 
-    if rank == 0:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        # Save top-level hyperparameters.
+    # Use restart_checkpoint if provided, otherwise generate a new timestamp.
+    if restart_checkpoint is not None:
+        timestamp = restart_checkpoint
+        if rank == 0:
+            print(f"[Rank 0] Restarting from checkpoint: {timestamp}")
+    else:
+        if rank == 0:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        else:
+            timestamp = None
+        timestamp = comm.bcast(timestamp, root=0)
+
+    # Save top-level hyperparameters only for a new run.
+    if restart_checkpoint is None and rank == 0:
         hyperparams = {
             'd': d,
             'hidden_sizes': hidden_sizes,
@@ -121,9 +138,14 @@ def main():
         hyperparams_path = os.path.join(base_results_dir, f"hyperparameters_{timestamp}.json")
         with open(hyperparams_path, "w") as f:
             json.dump(hyperparams, f, indent=4)
+
+    # ────────────── Set up Shared Checkpoint Log ──────────────
+    checkpoint_log_path = os.path.join(base_results_dir, f"checkpoint_{timestamp}.txt")
+    if os.path.exists(checkpoint_log_path):
+        with open(checkpoint_log_path, "r") as f:
+            completed_configs = set(line.strip() for line in f if line.strip())
     else:
-        timestamp = None
-    timestamp = comm.bcast(timestamp, root=0)
+        completed_configs = set()
 
     # ────────────── Build All Configurations and Distribute Work ──────────────
     all_combinations = []
@@ -154,16 +176,20 @@ def main():
     dataset_cache = {}
 
     # File for partial results for this worker.
-    results_file_path = os.path.join(
-        base_results_dir,
-        f"results_{timestamp}_rank{rank}.jsonl"
-    )
+    results_file_path = os.path.join(base_results_dir, f"results_{timestamp}_rank{rank}.jsonl")
     if os.path.exists(results_file_path):
         os.remove(results_file_path)
     worker_results = []
 
     # ────────────── Process Each Hyperparameter Configuration ──────────────
     for config in worker_combinations:
+        # Generate a unique identifier for this configuration.
+        unique_id = (f"{config['ds_name']}_h{config['hidden_size']}_d{config['depth']}_n"
+                     f"{config['n_train']}_lr{config['lr']}_exp{config['experiment_num']}")
+        if unique_id in completed_configs:
+            print(f"[Rank {rank}] Skipping completed configuration: {unique_id}")
+            continue
+
         ds_path = config['ds_path']
         ds_name = config['ds_name']
         exp_num = config['experiment_num']
@@ -194,7 +220,6 @@ def main():
             }
             print(f"[Rank {rank}] Dataset '{ds_name}' loaded and cached.")
         else:
-            # Retrieve cached data.
             X_test = dataset_cache[ds_path]['X_test']
             y_test = dataset_cache[ds_path]['y_test']
             X_train_master = dataset_cache[ds_path]['X_train_master']
@@ -237,13 +262,6 @@ def main():
         if shuffled:
             model_prefix += "_shuffled"
 
-        # Optionally, save the local training dataset.
-        exp_results_dir = os.path.join(base_results_dir, f"experiment{exp_num}")
-        os.makedirs(exp_results_dir, exist_ok=True)
-        train_dataset_path = os.path.join(exp_results_dir, f"train_dataset_{model_prefix}_{timestamp}_rank{rank}.pt")
-        # Uncomment if you wish to save:
-        # save_dataset(X_train_norm, y_train_norm, train_dataset_path, rank)
-
         # ───── Model Initialization ─────
         model_seed = None
         if model_init != "":
@@ -269,14 +287,14 @@ def main():
             model = DeepNN(d, config['hidden_size'], config['depth'], mode=mode, gamma=gamma).to(device)
 
         if save_model_flag and model_init == "":
+            exp_results_dir = os.path.join(base_results_dir, f"experiment{exp_num}")
+            os.makedirs(exp_results_dir, exist_ok=True)
             initial_model_path = os.path.join(exp_results_dir, f"initial_model_{model_prefix}_{timestamp}_rank{rank}.pt")
             save_model(model, initial_model_path)
 
         local_checkpoint_epochs = checkpoint_epochs if save_model_flag else []
 
         # ───── Train and Evaluate the Model ─────
-        # Note: The 'use_amp' argument has been removed because your current
-        # train_and_evaluate function does not support it.
         test_error, initial_train_error, final_train_error, error_history, checkpoint_models = train_and_evaluate(
             model, X_train_norm, y_train_norm, X_test_norm, y_test_norm,
             batch_size, epochs, local_checkpoint_epochs, config['lr'],
@@ -285,7 +303,10 @@ def main():
         )
 
         if save_model_flag:
-            final_model_path = os.path.join(exp_results_dir, f"final_model_{model_prefix}_{timestamp}_rank{rank}.pt")
+            final_model_path = os.path.join(
+                base_results_dir, f"experiment{exp_num}",
+                f"final_model_{model_prefix}_{timestamp}_rank{rank}.pt"
+            )
             save_model(model, final_model_path)
 
         # ───── Record Results ─────
@@ -317,11 +338,18 @@ def main():
             f.flush()
             os.fsync(f.fileno())
 
+        # Append the unique configuration identifier to the shared checkpoint log.
+        with open(checkpoint_log_path, "a") as cp_f:
+            cp_f.write(unique_id + "\n")
+        completed_configs.add(unique_id)
+
         print(f"[Rank {rank}] Completed configuration: {config}")
 
+    # Save final aggregated results for this worker
     with open(os.path.join(base_results_dir, f"final_results_{timestamp}_rank{rank}.json"), "w") as f:
         json.dump(worker_results, f, indent=4)
     print(f"[Rank {rank}] Finished processing. Results saved to {results_file_path}")
+
 
 if __name__ == "__main__":
     main()

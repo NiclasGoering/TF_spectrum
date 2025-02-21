@@ -39,9 +39,34 @@ def K_matvec(v, kernel_fn, X, batch_size, reg):
     out = jnp.concatenate(out_batches, axis=0)
     return out + reg * v
 
-def solve_kernel_system(kernel_fn, X, y, reg, batch_size, tol=1e-5, maxiter=5000, max_maxiter=100000):
+def compute_diag(kernel_fn, X, batch_size, reg):
     """
-    Solve (K(X,X) + reg*I) * alpha = y using conjugate gradient in a batched manner.
+    Compute the diagonal of the kernel matrix K(X, X) plus regularization.
+    
+    Args:
+      kernel_fn: function to compute the NTK.
+      X: training data of shape (n_train, d).
+      batch_size: int, batch size.
+      reg: regularization scalar.
+      
+    Returns:
+      diag: vector of shape (n_train,) containing the diagonal elements.
+    """
+    n = X.shape[0]
+    diag_list = []
+    for i in range(0, n, batch_size):
+        X_batch = X[i:i+batch_size]
+        K_batch = kernel_fn(X_batch, X, get='ntk')
+        # For each row j in the batch, the diagonal element is at column (i+j)
+        diag_batch = [K_batch[j, i+j] for j in range(len(X_batch))]
+        diag_list.extend(diag_batch)
+    diag = jnp.array(diag_list)
+    return diag + reg
+
+def solve_kernel_system(kernel_fn, X, y, reg, batch_size, tol=1e-3, maxiter=5000, max_maxiter=150000):
+    """
+    Solve (K(X,X) + reg*I) * alpha = y using conjugate gradient in a batched manner,
+    with a diagonal preconditioner.
     
     If CG does not converge with the initial maxiter, this function will double the
     maximum iterations and try again, up to max_maxiter.
@@ -63,10 +88,16 @@ def solve_kernel_system(kernel_fn, X, y, reg, batch_size, tol=1e-5, maxiter=5000
     n = X.shape[0]
     def matvec(v):
         return K_matvec(v, kernel_fn, X, batch_size, reg)
+    
+    # Compute a simple diagonal preconditioner: M^{-1} approximated by 1 / diag
+    diag = compute_diag(kernel_fn, X, batch_size, reg)
+    def preconditioner(v):
+        return v / diag
+
     x0 = jnp.zeros(n)
     current_maxiter = maxiter
     while current_maxiter <= max_maxiter:
-        alpha, info = sp_linalg.cg(matvec, y, x0=x0, tol=tol, maxiter=current_maxiter)
+        alpha, info = sp_linalg.cg(matvec, y, x0=x0, tol=tol, maxiter=current_maxiter, M=preconditioner)
         residual = jnp.linalg.norm(matvec(alpha) - y)
         if info == 0:
             return alpha, info, residual
@@ -116,7 +147,7 @@ def main():
     print(f"Process {rank} using device: {device}")
 
     # ───────────────────── PARAMETERS ─────────────────────
-    experiment_name = "d30_hidden256_NTKjax_depth_mpi2"
+    experiment_name = "d30_hidden256_NTK_2102"
     d = 30  # Input dimension.
     hidden_sizes = [5000]
     hidden_sizes.reverse()  # (largest hidden size last)
@@ -124,14 +155,14 @@ def main():
     #depths.reverse()       # e.g. [4, 2, 1]
     n_test = 20000
     pred_batch_size = 128  # Batch size for kernel–vector products.
-    reg = 1e-6           # Regularization scalar.
+    reg = 5e-4           # Regularization scalar increased to 1e-5.
     mode = 'NTK'
     shuffled = False
     gamma = 1.0
     num_experiments = 1
     learning_rates = [0.0005]  # For logging.
-    n_train_sizes = [2**3, 2**7, 2**9, 2**10, 2**12, 2**14, 2**15, 2**16, 2**17,2**18]
-    n_train_sizes.reverse()
+    n_train_sizes = [2**3, 2**7, 2**9, 2**10, 2**12, 2**14, 2**15, 2**16, 2**17, 2**18]
+    #n_train_sizes.reverse()
     normalize_data = False
 
     model_init = ""
@@ -143,9 +174,9 @@ def main():
         "/home/goring/TF_spectrum/results_pretrain_testgrid_2/results_2_model_d30_hidden256_depth1_alpha0.25_20250219_104955/dataset_model_d30_hidden256_depth1_alpha0.25_20250219_104955.pt",
         "/home/goring/TF_spectrum/results_pretrain_testgrid_2/results_2_model_d30_hidden256_depth1_alpha0.5_20250219_105002/dataset_model_d30_hidden256_depth1_alpha0.5_20250219_105002.pt",
         "/home/goring/TF_spectrum/results_pretrain_testgrid_2/results_2_model_d30_hidden256_depth1_alpha1.0_20250219_105445/dataset_model_d30_hidden256_depth1_alpha1.0_20250219_105445.pt",
-        "/home/goring/TF_spectrum/results_pretrain_testgrid_2/results_2_model_d30_hidden256_depth1_alpha2.0_20250219_110709/dataset_model_d30_hidden256_depth1_alpha2.0_20250219_110709.pt",
-     "/home/goring/TF_spectrum/results_pretrain_testgrid_2/results_2_model_d30_hidden256_depth1_alpha5.0_20250219_105903/dataset_model_d30_hidden256_depth1_alpha5.0_20250219_105903.pt", 
-     "/home/goring/TF_spectrum/results_pretrain_testgrid_2/results_2_model_d30_hidden256_depth1_alpha10.0_20250219_112240/dataset_model_d30_hidden256_depth1_alpha10.0_20250219_112240.pt"  
+        "/home/goring/TF_spectrum/datasets/dataset_model_d30_hidden256_depth1_alpha2.0_20250219_110709.pt",
+        "/home/goring/TF_spectrum/datasets/dataset_model_d30_hidden256_depth1_alpha5.0_20250219_105903.pt",
+        "/home/goring/TF_spectrum/datasets/dataset_model_d30_hidden256_depth1_alpha10.0_20250219_112240.pt"  
     ]
     dataset_names = ["a0", "a025", "a05", "a1", "a2", "a5", "a10"]
     # ─────────────────────────────────────────────────────
