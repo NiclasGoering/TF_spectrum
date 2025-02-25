@@ -22,7 +22,9 @@ print = partial(print, flush=True)
 
 def main():
     # ────────────── Set Restart Checkpoint (None for new run) ──────────────
-    restart_checkpoint = None  # Set to a timestamp string to restart from that checkpoint.
+    # Set to a full path if you wish to restart from an old checkpoint,
+    # otherwise set restart_checkpoint = None for a fresh run.
+    restart_checkpoint = None
 
     # ────────────── MPI and Device Setup ──────────────
     comm = MPI.COMM_WORLD
@@ -52,24 +54,27 @@ def main():
     torch.set_default_dtype(torch.float32)
 
     # ────────────── Experiment and Hyperparameter Parameters ──────────────
-    experiment_name = "d30_hidden256_mup_2102"
-    d = 30
+    experiment_name = "d50_hidden256_standard_2502"
+    d = 50
 
-    hidden_sizes = [2**7, 2**8, 2**9, 2**11]
-    hidden_sizes.reverse()  # e.g. [2048, 1024, 512, 256]
-    depths = [1, 4]
-    depths.reverse()       # e.g. [4, 1]
+    hidden_sizes = [256,512,1024,2**12,2**13]
+    hidden_sizes.reverse()  # e.g. [512, 128, 256]
+    depths = [1]
+    depths.reverse()       # e.g. [1]
+
+    # Base width for learning rate scaling - reference width for scaling formula
+    base_width = 256  # New parameter for LR scaling
 
     n_test = 20000
-    batch_size = 128
-    epochs = 5000
+    batch_size = 64
+    epochs = 3000
     checkpoint_epochs = []  # e.g. [100, 1000]
-    weight_decay = 1e-4
-    mode = 'mup_no_align'
+    weight_decay = 0  # 1e-4
+    mode = 'standard'
     shuffled = False
     gamma = 1.0
     num_experiments = 1
-    learning_rates = [0.005, 0.0005, 0.05]
+    learning_rates = [0.001]
 
     n_train_sizes = [2**3, 2**7, 2**9, 2**10, 2**12, 2**14, 2**15, 2**16, 2**17, 2**18]
     n_train_sizes.reverse()
@@ -85,24 +90,29 @@ def main():
 
     # ────────────── Dataset Paths and Names ──────────────
     dataset_paths = [
-        "/home/goring/TF_spectrum/results_pretrain_testgrid_2/results_2_model_d30_hidden256_depth1_alpha0.0_20250219_112539/dataset_model_d30_hidden256_depth1_alpha0.0_20250219_112539.pt",
-        "/home/goring/TF_spectrum/results_pretrain_testgrid_2/results_2_model_d30_hidden256_depth1_alpha0.25_20250219_104955/dataset_model_d30_hidden256_depth1_alpha0.25_20250219_104955.pt",
-        "/home/goring/TF_spectrum/results_pretrain_testgrid_2/results_2_model_d30_hidden256_depth1_alpha0.5_20250219_105002/dataset_model_d30_hidden256_depth1_alpha0.5_20250219_105002.pt",
-        "/home/goring/TF_spectrum/results_pretrain_testgrid_2/results_2_model_d30_hidden256_depth1_alpha1.0_20250219_105445/dataset_model_d30_hidden256_depth1_alpha1.0_20250219_105445.pt"
+        "/home/goring/TF_spectrum/results_pretrain_testgrid_2/results_2_model_d50_hidden256_depth1_alpha5.0_20250224_150947/dataset_model_d50_hidden256_depth1_alpha5.0_20250224_150947.pt",
+"/home/goring/TF_spectrum/results_pretrain_testgrid_2/results_2_model_d50_hidden256_depth1_alpha2.0_20250224_144847/dataset_model_d50_hidden256_depth1_alpha2.0_20250224_144847.pt",
+"/home/goring/TF_spectrum/results_pretrain_testgrid_2/results_2_model_d50_hidden256_depth1_alpha1.0_20250224_144718/dataset_model_d50_hidden256_depth1_alpha1.0_20250224_144718.pt",
+"/home/goring/TF_spectrum/results_pretrain_testgrid_2/results_2_model_d50_hidden256_depth1_alpha0.25_20250224_143650/dataset_model_d50_hidden256_depth1_alpha0.25_20250224_143650.pt",
+"/home/goring/TF_spectrum/results_pretrain_testgrid_2/results_2_model_d50_hidden256_depth1_alpha0.5_20250224_144444/dataset_model_d50_hidden256_depth1_alpha0.5_20250224_144444.pt",
+"/home/goring/TF_spectrum/results_pretrain_testgrid_2/results_2_model_d50_hidden256_depth1_alpha0.0_20250224_143359/dataset_model_d50_hidden256_depth1_alpha0.0_20250224_143359.pt"
     ]
-    dataset_names = ["a0", "a025", "a05", "a1"]
+    dataset_names = ["a5", "a2","a1","a025","a05","a0"]
 
     # ────────────── Base Results Directory and Timestamp ──────────────
-    base_results_dir = f"/home/goring/TF_spectrum/results_testgrid/{experiment_name}"
+    base_results_dir = f"//home/goring/TF_spectrum/results/results_correct_scaling/{experiment_name}"
     if rank == 0:
         os.makedirs(base_results_dir, exist_ok=True)
     comm.Barrier()  # Ensure directory exists for all processes.
 
     # Use restart_checkpoint if provided, otherwise generate a new timestamp.
     if restart_checkpoint is not None:
-        timestamp = restart_checkpoint
-        if rank == 0:
-            print(f"[Rank 0] Restarting from checkpoint: {timestamp}")
+        # Use the provided checkpoint file directly.
+        checkpoint_log_path = restart_checkpoint
+        with open(checkpoint_log_path, "r") as f:
+            completed_configs = set(line.strip() for line in f if line.strip())
+        # Extract timestamp from the checkpoint file name
+        timestamp = os.path.basename(restart_checkpoint).replace("checkpoint_", "").replace(".txt", "")
     else:
         if rank == 0:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -116,6 +126,7 @@ def main():
             'd': d,
             'hidden_sizes': hidden_sizes,
             'depths': depths,
+            'base_width': base_width,  # Add the base_width parameter to hyperparams
             'n_test': n_test,
             'batch_size': batch_size,
             'epochs': epochs,
@@ -140,12 +151,13 @@ def main():
             json.dump(hyperparams, f, indent=4)
 
     # ────────────── Set up Shared Checkpoint Log ──────────────
-    checkpoint_log_path = os.path.join(base_results_dir, f"checkpoint_{timestamp}.txt")
-    if os.path.exists(checkpoint_log_path):
-        with open(checkpoint_log_path, "r") as f:
-            completed_configs = set(line.strip() for line in f if line.strip())
-    else:
-        completed_configs = set()
+    if restart_checkpoint is None:
+        checkpoint_log_path = os.path.join(base_results_dir, f"checkpoint_{timestamp}.txt")
+        if os.path.exists(checkpoint_log_path):
+            with open(checkpoint_log_path, "r") as f:
+                completed_configs = set(line.strip() for line in f if line.strip())
+        else:
+            completed_configs = set()
 
     # ────────────── Build All Configurations and Distribute Work ──────────────
     all_combinations = []
@@ -163,7 +175,8 @@ def main():
                                 'n_train': n_train,
                                 'lr': lr,
                                 'gamma': gamma,
-                                'experiment_num': exp_num
+                                'experiment_num': exp_num,
+                                'base_width': base_width  # Add base_width to each config
                             })
 
     # Each MPI worker processes a subset of configurations (round-robin distribution).
@@ -177,7 +190,8 @@ def main():
 
     # File for partial results for this worker.
     results_file_path = os.path.join(base_results_dir, f"results_{timestamp}_rank{rank}.jsonl")
-    if os.path.exists(results_file_path):
+    # Only remove the results file if starting a fresh run (not a restart)
+    if restart_checkpoint is None and os.path.exists(results_file_path):
         os.remove(results_file_path)
     worker_results = []
 
@@ -276,7 +290,10 @@ def main():
             print(f"[Rank {rank}] Loading initial model from {model_init}")
             loaded = torch.load(model_init, map_location=device)
             if isinstance(loaded, dict):
-                model = DeepNN(d, init_hidden_size, init_depth, mode=init_mode, gamma=init_gamma).to(device)
+                model = DeepNN(d, init_hidden_size, init_depth, 
+                              mode=init_mode, 
+                              base_width=base_width,  # Add base_width
+                              gamma=init_gamma).to(device)
                 model.load_state_dict(loaded)
             else:
                 model = loaded
@@ -284,7 +301,10 @@ def main():
             model_seed = hash(f"model_{ds_name}_{datetime.now()}_{rank}_{exp_num}")
             torch.manual_seed(model_seed)
             print(f"[Rank {rank}] Initializing model with seed: {model_seed}")
-            model = DeepNN(d, config['hidden_size'], config['depth'], mode=mode, gamma=gamma).to(device)
+            model = DeepNN(d, config['hidden_size'], config['depth'], 
+                          mode=mode, 
+                          base_width=base_width,  # Add base_width 
+                          gamma=gamma).to(device)
 
         if save_model_flag and model_init == "":
             exp_results_dir = os.path.join(base_results_dir, f"experiment{exp_num}")
@@ -292,14 +312,20 @@ def main():
             initial_model_path = os.path.join(exp_results_dir, f"initial_model_{model_prefix}_{timestamp}_rank{rank}.pt")
             save_model(model, initial_model_path)
 
+            # Save the training dataset that the model is trained on.
+            dataset_save_path = os.path.join(exp_results_dir, f"dataset_{model_prefix}_{timestamp}_rank{rank}.pt")
+            save_dataset(X_train, y_train, dataset_save_path, rank)
+
         local_checkpoint_epochs = checkpoint_epochs if save_model_flag else []
 
         # ───── Train and Evaluate the Model ─────
+        # ───── Train and Evaluate the Model ─────
         test_error, initial_train_error, final_train_error, error_history, checkpoint_models = train_and_evaluate(
-            model, X_train_norm, y_train_norm, X_test_norm, y_test_norm,
-            batch_size, epochs, local_checkpoint_epochs, config['lr'],
-            weight_decay, mode, base_results_dir, timestamp, rank,
-            exp_num, model_prefix, gamma
+    model, X_train_norm, y_train_norm, X_test_norm, y_test_norm,
+    batch_size, epochs, local_checkpoint_epochs, config['lr'],
+    weight_decay, mode, base_results_dir, timestamp, rank,
+    exp_num, model_prefix,
+    base_width=base_width  # Add base_width (but remove gamma)
         )
 
         if save_model_flag:
@@ -315,6 +341,7 @@ def main():
             'dataset_path': ds_path,
             'hidden_size': config['hidden_size'],
             'depth': config['depth'],
+            'base_width': base_width,  # Add base_width to results
             'n_train': config['n_train'],
             'learning_rate': config['lr'],
             'mode': mode,
@@ -333,6 +360,7 @@ def main():
         }
         worker_results.append(result)
 
+        # Append new results in append mode.
         with open(results_file_path, "a") as f:
             f.write(json.dumps(result) + "\n")
             f.flush()
@@ -345,7 +373,7 @@ def main():
 
         print(f"[Rank {rank}] Completed configuration: {config}")
 
-    # Save final aggregated results for this worker
+    # Save final aggregated results for this worker.
     with open(os.path.join(base_results_dir, f"final_results_{timestamp}_rank{rank}.json"), "w") as f:
         json.dump(worker_results, f, indent=4)
     print(f"[Rank {rank}] Finished processing. Results saved to {results_file_path}")

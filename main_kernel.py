@@ -63,7 +63,7 @@ def compute_diag(kernel_fn, X, batch_size, reg):
     diag = jnp.array(diag_list)
     return diag + reg
 
-def solve_kernel_system(kernel_fn, X, y, reg, batch_size, tol=1e-3, maxiter=5000, max_maxiter=150000):
+def solve_kernel_system(kernel_fn, X, y, reg, batch_size, tol=1e-3, maxiter=20000, max_maxiter=500000):
     """
     Solve (K(X,X) + reg*I) * alpha = y using conjugate gradient in a batched manner,
     with a diagonal preconditioner.
@@ -147,15 +147,15 @@ def main():
     print(f"Process {rank} using device: {device}")
 
     # ───────────────────── PARAMETERS ─────────────────────
-    experiment_name = "d30_hidden256_NTK_2102"
+    experiment_name = "d30_hidden256_NTK_2102_maxiter20k"
     d = 30  # Input dimension.
     hidden_sizes = [5000]
     hidden_sizes.reverse()  # (largest hidden size last)
     depths = [1, 4]
     #depths.reverse()       # e.g. [4, 2, 1]
     n_test = 20000
-    pred_batch_size = 128  # Batch size for kernel–vector products.
-    reg = 5e-4           # Regularization scalar increased to 1e-5.
+    pred_batch_size = 256  # Batch size for kernel–vector products.
+    reg = 5e-5           # Regularization scalar increased to 1e-5.
     mode = 'NTK'
     shuffled = False
     gamma = 1.0

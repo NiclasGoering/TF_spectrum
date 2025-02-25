@@ -39,14 +39,14 @@ def create_layer_specific_optimizer(
     weight_decay: float
 ):
     """
-    Create an Adam optimizer with layer-specific learning rates:
-      - For 'mup_no_align', each layer has a different scaling from the FFNN.
-      - For 'standard', you might have a simpler set of 1.0s or custom multipliers 
-        (embed_lr_scale, hidden_lr_scale, readout_lr_scale).
+    Create an Adam optimizer with layer-specific learning rates based on model mode.
+    
+    - For '_lr' suffix modes (standard_lr, mup_no_align_lr), no scaling is applied
+    - For regular modes, applies correct theoretical LR scaling with base width
     """
     layer_lrs = model.get_layer_learning_rates(base_lr)
 
-    # We'll place all parameters in one param-group for simplicity:
+    # Create standard optimizer with base learning rate
     optimizer = optim.Adam(model.parameters(), lr=base_lr, weight_decay=weight_decay)
 
     # Map parameter-names to the scaling factor from layer_lrs
@@ -54,15 +54,14 @@ def create_layer_specific_optimizer(
     linear_layer_idx = 0
     for name, param in model.named_parameters():
         if 'weight' in name or 'bias' in name:
-            # We increment linear_layer_idx by 1 every time we finish both 
-            # the weight and the bias of a layer. A simple trick:
-            scale_factor = layer_lrs[linear_layer_idx // 2]
+            # Scale factor is the ratio of layer's LR to base LR
+            scale_factor = layer_lrs[linear_layer_idx // 2] / base_lr
             param_scale[name] = scale_factor
             if 'bias' in name:
                 linear_layer_idx += 1
 
     def grad_scale_fn():
-        # Multiply each parameter's gradient by its layer-specific factor
+        # Apply layer-specific LR scaling by scaling gradients
         for name, param in model.named_parameters():
             if param.grad is not None and name in param_scale:
                 param.grad.mul_(param_scale[name])
@@ -86,12 +85,13 @@ def train_and_evaluate(
     rank: int,
     experiment_num: int,
     model_prefix: str,
+    base_width: int = 256,  # Added base_width parameter with default
     eval_interval: int = 10,
     eval_print_interval: int = 100,
     eval_batch_size: int = 1024
 ) -> Tuple[float, float, float, dict, Dict[int, nn.Module]]:
     """
-    Train the model with Adam + (optionally) layer-specific LR scaling.
+    Train the model with Adam + layer-specific LR scaling (depending on mode).
     """
     device = next(model.parameters()).device
     model = model.to(device)
@@ -168,9 +168,11 @@ def train_and_evaluate(
                 model.hidden_size,
                 model.depth,
                 mode=model.mode,
+                base_width=model.base_width,  # Make sure to pass base_width
                 embed_lr_scale=model.embed_lr_scale,
                 hidden_lr_scale=model.hidden_lr_scale,
-                readout_lr_scale=model.readout_lr_scale
+                readout_lr_scale=model.readout_lr_scale,
+                gamma=model.gamma
             ).to(device)
             checkpoint_model.load_state_dict(model.state_dict())
 

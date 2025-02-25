@@ -262,18 +262,18 @@ def compute_last_hidden_kernel_unnormalized_spectrum(model: DeepNN, X: torch.Ten
 
 def main():
     # --- Hyperparameters ---
-    d = 30                      # Input dimension.
+    d = 50                      # Input dimension.
     hidden_size = 256           # Hidden layer (penultimate) size.
     depth = 1                   # Total network depth.
     train_size = 300000         # Number of training samples.
-    mode = 'mup_no_align'       # Network mode.
-    alpha = 0.0                 # Use a milder decay exponent for a smoother target spectrum.
+    mode = 'standard'       # Network mode.
+    alpha = 5.0                 # Use a milder decay exponent for a smoother target spectrum.
     lambda_eig = 50.0          # Adjusted eigenvalue loss weight.
-    use_log = False             # Use logarithmic eigenvalue loss.
-    epochs = 100000              # Training epochs.
+    use_log = True             # Use logarithmic eigenvalue loss.
+    epochs = 12000              # Training epochs.
     lr = 5e-2                   # Learning rate.
-    top_k = 5                   # Number of top eigenvalues to match.
-    lambda_top = 10.0          # Adjusted top-k loss weight.
+    top_k = 10                   # Number of top eigenvalues to match.
+    lambda_top = 200.0          # Adjusted top-k loss weight.
     # Set the rank preservation weight (nonzero to add the penalty; adjust as needed)
     rank_preservation_weight = 0.01  
     rank = 0                    # Rank for saving dataset.
