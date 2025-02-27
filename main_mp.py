@@ -24,7 +24,7 @@ def main():
     # ────────────── Set Restart Checkpoint (None for new run) ──────────────
     # Set to a full path if you wish to restart from an old checkpoint,
     # otherwise set restart_checkpoint = None for a fresh run.
-    restart_checkpoint = None
+    restart_checkpoint = "/home/goring/TF_spectrum/results/results_correct_scaling/d10_hidden256_standard_2502/checkpoint_20250226_033859.txt"
 
     # ────────────── MPI and Device Setup ──────────────
     comm = MPI.COMM_WORLD
@@ -54,8 +54,8 @@ def main():
     torch.set_default_dtype(torch.float32)
 
     # ────────────── Experiment and Hyperparameter Parameters ──────────────
-    experiment_name = "d50_hidden256_standard_2502"
-    d = 50
+    experiment_name = "d30_hidden256_ntk_al_2702"
+    d = 30
 
     hidden_sizes = [256,512,1024,2**12,2**13]
     hidden_sizes.reverse()  # e.g. [512, 128, 256]
@@ -70,7 +70,13 @@ def main():
     epochs = 3000
     checkpoint_epochs = []  # e.g. [100, 1000]
     weight_decay = 0  # 1e-4
-    mode = 'standard'
+    
+    # Mode options: 'standard_lr', 'ntk_lr', 'mup_lr', 'standard', 'ntk', 'mup'
+    mode = 'ntk'
+    
+    # Alignment option for learning rate scaling
+    alignment = True
+    
     shuffled = False
     gamma = 1.0
     num_experiments = 1
@@ -85,19 +91,20 @@ def main():
     init_depth = 1
     init_gamma = 1.0
     init_mode = 'mup_no_align'
+    init_alignment = False  # Added for pre-initialized model
     save_model_flag = False   # Whether to save initial/final models.
     normalize_data = False    # Whether to normalize data.
 
     # ────────────── Dataset Paths and Names ──────────────
     dataset_paths = [
-        "/home/goring/TF_spectrum/results_pretrain_testgrid_2/results_2_model_d50_hidden256_depth1_alpha5.0_20250224_150947/dataset_model_d50_hidden256_depth1_alpha5.0_20250224_150947.pt",
-"/home/goring/TF_spectrum/results_pretrain_testgrid_2/results_2_model_d50_hidden256_depth1_alpha2.0_20250224_144847/dataset_model_d50_hidden256_depth1_alpha2.0_20250224_144847.pt",
-"/home/goring/TF_spectrum/results_pretrain_testgrid_2/results_2_model_d50_hidden256_depth1_alpha1.0_20250224_144718/dataset_model_d50_hidden256_depth1_alpha1.0_20250224_144718.pt",
-"/home/goring/TF_spectrum/results_pretrain_testgrid_2/results_2_model_d50_hidden256_depth1_alpha0.25_20250224_143650/dataset_model_d50_hidden256_depth1_alpha0.25_20250224_143650.pt",
-"/home/goring/TF_spectrum/results_pretrain_testgrid_2/results_2_model_d50_hidden256_depth1_alpha0.5_20250224_144444/dataset_model_d50_hidden256_depth1_alpha0.5_20250224_144444.pt",
-"/home/goring/TF_spectrum/results_pretrain_testgrid_2/results_2_model_d50_hidden256_depth1_alpha0.0_20250224_143359/dataset_model_d50_hidden256_depth1_alpha0.0_20250224_143359.pt"
+"/home/goring/TF_spectrum/results_pretrain_testgrid_2/results_2_model_d30_hidden256_depth1_alpha2.0_20250219_110709/dataset_model_d30_hidden256_depth1_alpha2.0_20250219_110709.pt",
+"/home/goring/TF_spectrum/results_pretrain_testgrid_2/results_2_model_d30_hidden256_depth1_alpha1.0_20250219_105445/dataset_model_d30_hidden256_depth1_alpha1.0_20250219_105445.pt",
+"/home/goring/TF_spectrum/results_pretrain_testgrid_2/results_2_model_d30_hidden256_depth1_alpha0.25_20250219_104955/dataset_model_d30_hidden256_depth1_alpha0.25_20250219_104955.pt",
+"/home/goring/TF_spectrum/results_pretrain_testgrid_2/results_2_model_d30_hidden256_depth1_alpha0.5_20250219_105002/dataset_model_d30_hidden256_depth1_alpha0.5_20250219_105002.pt",
+"/home/goring/TF_spectrum/results_pretrain_testgrid_2/results_2_model_d30_hidden256_depth1_alpha0.0_20250219_112539/dataset_model_d30_hidden256_depth1_alpha0.0_20250219_112539.pt",
+"/home/goring/TF_spectrum/results_pretrain_testgrid_2/results_2_model_d30_hidden256_depth1_alpha5.0_20250219_105903/dataset_model_d30_hidden256_depth1_alpha5.0_20250219_105903.pt"
     ]
-    dataset_names = ["a5", "a2","a1","a025","a05","a0"]
+    dataset_names = ["a2", "a1","a025","a05","a0","a5"]
 
     # ────────────── Base Results Directory and Timestamp ──────────────
     base_results_dir = f"//home/goring/TF_spectrum/results/results_correct_scaling/{experiment_name}"
@@ -126,7 +133,7 @@ def main():
             'd': d,
             'hidden_sizes': hidden_sizes,
             'depths': depths,
-            'base_width': base_width,  # Add the base_width parameter to hyperparams
+            'base_width': base_width,
             'n_test': n_test,
             'batch_size': batch_size,
             'epochs': epochs,
@@ -134,6 +141,7 @@ def main():
             'learning_rates': learning_rates,
             'weight_decay': weight_decay,
             'mode': mode,
+            'alignment': alignment,  # Add alignment to hyperparams
             'shuffled': shuffled,
             'n_train_sizes': n_train_sizes,
             'device': str(device),
@@ -176,7 +184,8 @@ def main():
                                 'lr': lr,
                                 'gamma': gamma,
                                 'experiment_num': exp_num,
-                                'base_width': base_width  # Add base_width to each config
+                                'base_width': base_width,
+                                'alignment': alignment  # Add alignment to each config
                             })
 
     # Each MPI worker processes a subset of configurations (round-robin distribution).
@@ -198,8 +207,9 @@ def main():
     # ────────────── Process Each Hyperparameter Configuration ──────────────
     for config in worker_combinations:
         # Generate a unique identifier for this configuration.
+        align_suffix = "_align" if config['alignment'] else ""
         unique_id = (f"{config['ds_name']}_h{config['hidden_size']}_d{config['depth']}_n"
-                     f"{config['n_train']}_lr{config['lr']}_exp{config['experiment_num']}")
+                     f"{config['n_train']}_lr{config['lr']}_exp{config['experiment_num']}{align_suffix}")
         if unique_id in completed_configs:
             print(f"[Rank {rank}] Skipping completed configuration: {unique_id}")
             continue
@@ -269,9 +279,10 @@ def main():
             config['shuffle_seed'] = shuffle_seed
 
         # Create a prefix for naming files.
+        align_tag = "_align" if config['alignment'] else ""
         model_prefix = (
             f"{ds_name}_h{config['hidden_size']}_d{config['depth']}_n{config['n_train']}"
-            f"_lr{config['lr']}_g{gamma}_{mode}"
+            f"_lr{config['lr']}_g{gamma}_{mode}{align_tag}"
         )
         if shuffled:
             model_prefix += "_shuffled"
@@ -287,12 +298,15 @@ def main():
                 raise ValueError("Mismatch in gamma for pre-initialized model.")
             if mode != init_mode:
                 raise ValueError("Mismatch in mode for pre-initialized model.")
+            if config['alignment'] != init_alignment:
+                raise ValueError("Mismatch in alignment for pre-initialized model.")
             print(f"[Rank {rank}] Loading initial model from {model_init}")
             loaded = torch.load(model_init, map_location=device)
             if isinstance(loaded, dict):
                 model = DeepNN(d, init_hidden_size, init_depth, 
                               mode=init_mode, 
-                              base_width=base_width,  # Add base_width
+                              alignment=init_alignment,
+                              base_width=base_width,
                               gamma=init_gamma).to(device)
                 model.load_state_dict(loaded)
             else:
@@ -303,7 +317,8 @@ def main():
             print(f"[Rank {rank}] Initializing model with seed: {model_seed}")
             model = DeepNN(d, config['hidden_size'], config['depth'], 
                           mode=mode, 
-                          base_width=base_width,  # Add base_width 
+                          alignment=config['alignment'],
+                          base_width=base_width,
                           gamma=gamma).to(device)
 
         if save_model_flag and model_init == "":
@@ -319,13 +334,17 @@ def main():
         local_checkpoint_epochs = checkpoint_epochs if save_model_flag else []
 
         # ───── Train and Evaluate the Model ─────
-        # ───── Train and Evaluate the Model ─────
         test_error, initial_train_error, final_train_error, error_history, checkpoint_models = train_and_evaluate(
-    model, X_train_norm, y_train_norm, X_test_norm, y_test_norm,
-    batch_size, epochs, local_checkpoint_epochs, config['lr'],
-    weight_decay, mode, base_results_dir, timestamp, rank,
-    exp_num, model_prefix,
-    base_width=base_width  # Add base_width (but remove gamma)
+            model, X_train_norm, y_train_norm, X_test_norm, y_test_norm,
+            batch_size, epochs, local_checkpoint_epochs, config['lr'],
+            weight_decay, mode, 
+            alignment=config['alignment'],  # Pass alignment to train_and_evaluate
+            results_dir=base_results_dir, 
+            timestamp=timestamp, 
+            rank=rank,
+            experiment_num=exp_num, 
+            model_prefix=model_prefix,
+            base_width=base_width
         )
 
         if save_model_flag:
@@ -341,10 +360,11 @@ def main():
             'dataset_path': ds_path,
             'hidden_size': config['hidden_size'],
             'depth': config['depth'],
-            'base_width': base_width,  # Add base_width to results
+            'base_width': base_width,
             'n_train': config['n_train'],
             'learning_rate': config['lr'],
             'mode': mode,
+            'alignment': config['alignment'],  # Add alignment to results
             'gamma': gamma,
             'shuffled': shuffled,
             'shuffle_seed': config.get('shuffle_seed'),

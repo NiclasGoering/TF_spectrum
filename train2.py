@@ -7,6 +7,7 @@ from typing import List, Dict, Tuple
 import os
 from functools import partial
 from datetime import datetime
+import types
 
 from FFNN import DeepNN
 
@@ -41,7 +42,7 @@ def create_layer_specific_optimizer(
     """
     Create an Adam optimizer with layer-specific learning rates based on model mode.
     
-    - For '_lr' suffix modes (standard_lr, mup_no_align_lr), no scaling is applied
+    - For '_lr' suffix modes (standard_lr, ntk_lr, mup_lr), no scaling is applied
     - For regular modes, applies correct theoretical LR scaling with base width
     """
     layer_lrs = model.get_layer_learning_rates(base_lr)
@@ -80,18 +81,19 @@ def train_and_evaluate(
     lr: float,
     weight_decay: float,
     mode: str,
-    results_dir: str,
-    timestamp: str,
-    rank: int,
-    experiment_num: int,
-    model_prefix: str,
-    base_width: int = 256,  # Added base_width parameter with default
+    alignment: bool = False,  # Added alignment parameter
+    results_dir: str = "",
+    timestamp: str = "",
+    rank: int = 0,
+    experiment_num: int = 0,
+    model_prefix: str = "",
+    base_width: int = 256,
     eval_interval: int = 10,
     eval_print_interval: int = 100,
     eval_batch_size: int = 1024
 ) -> Tuple[float, float, float, dict, Dict[int, nn.Module]]:
     """
-    Train the model with Adam + layer-specific LR scaling (depending on mode).
+    Train the model with Adam + layer-specific LR scaling (depending on mode and alignment).
     """
     device = next(model.parameters()).device
     model = model.to(device)
@@ -168,7 +170,8 @@ def train_and_evaluate(
                 model.hidden_size,
                 model.depth,
                 mode=model.mode,
-                base_width=model.base_width,  # Make sure to pass base_width
+                alignment=model.alignment,  # Added alignment parameter
+                base_width=model.base_width,
                 embed_lr_scale=model.embed_lr_scale,
                 hidden_lr_scale=model.hidden_lr_scale,
                 readout_lr_scale=model.readout_lr_scale,
@@ -201,7 +204,7 @@ def shuffle_labels(y_train: torch.Tensor, seed: int = None) -> torch.Tensor:
     perm = torch.randperm(y_train.size(0))
     return y_train[perm]
 
-def get_parameter_combinations(hidden_sizes, depths, n_train_sizes, learning_rates, gammas):
+def get_parameter_combinations(hidden_sizes, depths, n_train_sizes, learning_rates, gammas, alignments=[False, True]):
     """Generate all possible hyperparameter combinations."""
     combinations = []
     if not isinstance(gammas, (list, tuple)):
@@ -212,11 +215,13 @@ def get_parameter_combinations(hidden_sizes, depths, n_train_sizes, learning_rat
             for n_train in n_train_sizes:
                 for lr in learning_rates:
                     for gamma in gammas:
-                        combinations.append({
-                            'hidden_size': hidden_size,
-                            'depth': depth,
-                            'n_train': n_train,
-                            'lr': lr,
-                            'gamma': float(gamma)
-                        })
+                        for alignment in alignments:  # Added alignment loop
+                            combinations.append({
+                                'hidden_size': hidden_size,
+                                'depth': depth,
+                                'n_train': n_train,
+                                'lr': lr,
+                                'gamma': float(gamma),
+                                'alignment': alignment  # Added alignment parameter
+                            })
     return combinations
