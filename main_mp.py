@@ -54,16 +54,16 @@ def main():
     torch.set_default_dtype(torch.float32)
 
     # ────────────── Experiment and Hyperparameter Parameters ──────────────
-    experiment_name = "d30_hidden256_ntk_al_2702"
-    d = 30
+    experiment_name = "d50_normal_hidden10_d2_standard_0203"
+    d = 50
 
-    hidden_sizes = [256,512,1024,2**12,2**13]
-    hidden_sizes.reverse()  # e.g. [512, 128, 256]
-    depths = [1]
+    hidden_sizes = [10,128,256,1024]
+    #hidden_sizes.reverse()  # e.g. [512, 128, 256]
+    depths = [2]
     depths.reverse()       # e.g. [1]
 
     # Base width for learning rate scaling - reference width for scaling formula
-    base_width = 256  # New parameter for LR scaling
+    base_width = 10  # New parameter for LR scaling
 
     n_test = 20000
     batch_size = 64
@@ -72,18 +72,18 @@ def main():
     weight_decay = 0  # 1e-4
     
     # Mode options: 'standard_lr', 'ntk_lr', 'mup_lr', 'standard', 'ntk', 'mup'
-    mode = 'ntk'
+    mode = 'standard'
     
     # Alignment option for learning rate scaling
-    alignment = True
+    alignment = False
     
     shuffled = False
     gamma = 1.0
     num_experiments = 1
-    learning_rates = [0.001]
+    learning_rates = [0.0001,0.001,0.01]
 
-    n_train_sizes = [2**3, 2**7, 2**9, 2**10, 2**12, 2**14, 2**15, 2**16, 2**17, 2**18]
-    n_train_sizes.reverse()
+    n_train_sizes = [2**3, 2**7, 2**9, 2**10, 2**12, 2**14, 2**15, 2**16] # 2**17, 2**18
+    #n_train_sizes.reverse()
 
     # If using a pre-initialized model.
     model_init = ""
@@ -97,14 +97,15 @@ def main():
 
     # ────────────── Dataset Paths and Names ──────────────
     dataset_paths = [
-"/home/goring/TF_spectrum/results_pretrain_testgrid_2/results_2_model_d30_hidden256_depth1_alpha2.0_20250219_110709/dataset_model_d30_hidden256_depth1_alpha2.0_20250219_110709.pt",
-"/home/goring/TF_spectrum/results_pretrain_testgrid_2/results_2_model_d30_hidden256_depth1_alpha1.0_20250219_105445/dataset_model_d30_hidden256_depth1_alpha1.0_20250219_105445.pt",
-"/home/goring/TF_spectrum/results_pretrain_testgrid_2/results_2_model_d30_hidden256_depth1_alpha0.25_20250219_104955/dataset_model_d30_hidden256_depth1_alpha0.25_20250219_104955.pt",
-"/home/goring/TF_spectrum/results_pretrain_testgrid_2/results_2_model_d30_hidden256_depth1_alpha0.5_20250219_105002/dataset_model_d30_hidden256_depth1_alpha0.5_20250219_105002.pt",
-"/home/goring/TF_spectrum/results_pretrain_testgrid_2/results_2_model_d30_hidden256_depth1_alpha0.0_20250219_112539/dataset_model_d30_hidden256_depth1_alpha0.0_20250219_112539.pt",
-"/home/goring/TF_spectrum/results_pretrain_testgrid_2/results_2_model_d30_hidden256_depth1_alpha5.0_20250219_105903/dataset_model_d30_hidden256_depth1_alpha5.0_20250219_105903.pt"
+"/home/goring/TF_spectrum/pretrain/pretrained_orthogonal_0103/PT_NP_d50_H10_D2_a20.0_NO_20250302_034640/dataset_NP_d50_H10_D2_a20.0_NO.pt",
+"/home/goring/TF_spectrum/pretrain/pretrained_orthogonal_0103/PT_NP_d50_H10_D2_a5.0_NO_20250302_034246/dataset_NP_d50_H10_D2_a5.0_NO.pt",
+"/home/goring/TF_spectrum/pretrain/pretrained_orthogonal_0103/PT_NP_d50_H10_D2_a2.0_NO_20250302_034246/dataset_NP_d50_H10_D2_a2.0_NO.pt",
+"/home/goring/TF_spectrum/pretrain/pretrained_orthogonal_0103/PT_NP_d50_H10_D2_a1.0_NO_20250302_034246/dataset_NP_d50_H10_D2_a1.0_NO.pt",
+"/home/goring/TF_spectrum/pretrain/pretrained_orthogonal_0103/PT_NP_d50_H10_D2_a0.5_NO_20250302_033943/dataset_NP_d50_H10_D2_a0.5_NO.pt",
+"/home/goring/TF_spectrum/pretrain/pretrained_orthogonal_0103/PT_NP_d50_H10_D2_a0.2_NO_20250302_033943/dataset_NP_d50_H10_D2_a0.2_NO.pt",
+"/home/goring/TF_spectrum/pretrain/pretrained_orthogonal_0103/PT_NP_d50_H10_D2_a0.0_NO_20250302_033943/dataset_NP_d50_H10_D2_a0.0_NO.pt"
     ]
-    dataset_names = ["a2", "a1","a025","a05","a0","a5"]
+    dataset_names = ["a20","a5","a2","a1","a05","a025","a0"]
 
     # ────────────── Base Results Directory and Timestamp ──────────────
     base_results_dir = f"//home/goring/TF_spectrum/results/results_correct_scaling/{experiment_name}"

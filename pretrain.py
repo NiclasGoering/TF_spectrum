@@ -11,32 +11,6 @@ from FFNN import DeepNN
 from utils2 import save_results, save_model, save_dataset
 
 
-# def create_target_kernel(feature_dim: int, alpha: float, device: torch.device):
-#     """
-#     Creates a target kernel matrix T ∈ ℝ^(feature_dim×feature_dim) with eigenvalues decaying as 1/(i+1)^α.
-#     The eigenvalues are scaled so that trace(T) = feature_dim.
-#     """
-#     eig_vals = np.array([1.0 / ((i + 1) ** alpha) for i in range(feature_dim)], dtype=np.float32)
-#     scale = feature_dim / eig_vals.sum()
-#     eig_vals_scaled = eig_vals * scale
-#     D = torch.diag(torch.tensor(eig_vals_scaled, device=device))
-    
-#     # Create a random orthogonal matrix Q via QR decomposition.
-#     A = torch.randn(feature_dim, feature_dim, device=device)
-#     Q, _ = torch.linalg.qr(A)
-    
-#     target_kernel = Q @ D @ Q.T
-#     target_kernel = (target_kernel + target_kernel.T) / 2  # Force symmetry.
-    
-#     # Shift T if necessary to be positive semidefinite.
-#     eigvals = torch.linalg.eigvalsh(target_kernel)
-#     if eigvals[0] < 0:
-#         target_kernel = target_kernel - eigvals[0] * torch.eye(feature_dim, device=device)
-#     target_eigenvals = torch.sort(torch.linalg.eigvalsh(target_kernel))[0]
-#     return target_kernel, target_eigenvals
-
-
-
 def create_target_kernel(feature_dim: int, alpha: float, device: torch.device, effective_rank: int = None, eps: float = 1e-8):
     """
     Creates a target kernel matrix T ∈ ℝ^(feature_dim×feature_dim) such that:
@@ -85,43 +59,90 @@ def create_target_kernel(feature_dim: int, alpha: float, device: torch.device, e
     target_eigenvals = torch.sort(torch.linalg.eigvalsh(target_kernel))[0]
     return target_kernel, target_eigenvals
 
-
 def smart_initialize_with_input_stats_modified(model: DeepNN, target_kernel: torch.Tensor, X: torch.Tensor, small_bias: float = 1e-2):
     """
     Adjusts the penultimate layer weights based on input statistics and the square-root of the target kernel.
     
-    Note: Unlike the previous version, we do not reinitialize the earlier layers with an identity-like pattern.
-    This way, the earlier layers remain at their default (normal) initialization.
+    This version handles the dimension mismatch between input features and target kernel.
     """
-    # For the penultimate layer, adjust weights using input statistics.
-    penultimate_layer = model.network[-2]
+    # Find all linear layers in the model
+    linear_layers = []
+    for i, layer in enumerate(model.layers):
+        if isinstance(layer, nn.Linear):
+            linear_layers.append(i)
+    
+    if len(linear_layers) < 2:
+        print("Warning: Not enough linear layers to identify penultimate layer")
+        return model
+    
+    penultimate_layer_idx = linear_layers[-2]  # Second-to-last linear layer
+    penultimate_layer = model.layers[penultimate_layer_idx]
+    
+    # We need to get the actual input to the penultimate layer, not the raw X
+    # First, get features up to the layer before the penultimate layer
+    features = X
+    for i in range(penultimate_layer_idx):
+        features = model.layers[i](features)
+    
     if isinstance(penultimate_layer, nn.Linear):
-        N = X.shape[0]
-        input_cov = (X.T @ X) / N
+        N = features.shape[0]
+        feature_dim = features.shape[1]  # Dimension of features entering the penultimate layer
+        target_dim = target_kernel.shape[0]  # Dimension of the target kernel
+        
+        # Compute input covariance matrix using the actual input to the penultimate layer
+        input_cov = (features.T @ features) / N
         eps = 1e-6
         input_cov = input_cov + eps * torch.eye(input_cov.shape[0], device=input_cov.device)
         
-        # Compute the square root and inverse square root of the input covariance.
+        # Compute the square root and inverse square root of the input covariance
         input_cov_eigvals, input_cov_eigvecs = torch.linalg.eigh(input_cov)
         input_cov_sqrt = input_cov_eigvecs @ torch.diag(torch.sqrt(input_cov_eigvals)) @ input_cov_eigvecs.T
         input_cov_sqrt_inv = input_cov_eigvecs @ torch.diag(1.0 / torch.sqrt(input_cov_eigvals)) @ input_cov_eigvecs.T
         
-        # Compute the square root of the target kernel.
+        # Compute the square root of the target kernel
         target_eigvals, target_eigvecs = torch.linalg.eigh(target_kernel)
         target_eigvals = torch.clamp(target_eigvals, min=1e-10)
         target_sqrt = target_eigvecs @ torch.diag(torch.sqrt(target_eigvals)) @ target_eigvecs.T
         
-        # Set the weight for the penultimate layer.
-        W_target = target_sqrt @ input_cov_sqrt_inv
-        # Add a small identity term to avoid rank-deficiency.
-        W_target = W_target + 1e-2 * torch.eye(W_target.size(0), device=W_target.device)
+        # Check if dimensions match for matrix multiplication
+        if feature_dim == target_dim:
+            # Direct multiplication is possible
+            W_target = target_sqrt @ input_cov_sqrt_inv
+        else:
+            print(f"Dimension mismatch: feature_dim={feature_dim}, target_dim={target_dim}")
+            print("Using an alternative initialization approach...")
+            
+            # Option 1: Random orthogonal initialization scaled by target eigenvalues
+            penultimate_out_dim = penultimate_layer.weight.shape[0]
+            penultimate_in_dim = penultimate_layer.weight.shape[1]
+            
+            # Create a random orthogonal weight matrix
+            W_random = torch.randn(penultimate_out_dim, penultimate_in_dim, device=penultimate_layer.weight.device)
+            W_random, _ = torch.linalg.qr(W_random)
+            
+            # Scale based on the average of target eigenvalues
+            target_eigenval_avg = target_eigvals.mean()
+            scale_factor = torch.sqrt(target_eigenval_avg)
+            W_target = scale_factor * W_random
+            
+            print(f"Initialized with random orthogonal matrix scaled by √{target_eigenval_avg:.4f}")
         
-        penultimate_layer.weight.data.copy_(W_target.to(penultimate_layer.weight.device))
+        # Add a small identity term to avoid rank-deficiency (if shapes allow)
+        if W_target.size(0) == W_target.size(1):
+            W_target = W_target + small_bias * torch.eye(W_target.size(0), device=W_target.device)
+        
+        # Ensure the weight matrix has the correct shape before assigning
+        if W_target.shape == penultimate_layer.weight.shape:
+            penultimate_layer.weight.data.copy_(W_target)
+        else:
+            print(f"Warning: W_target shape {W_target.shape} doesn't match penultimate layer weight shape {penultimate_layer.weight.shape}")
+            print("Keeping original weights for penultimate layer")
+        
+        # Set bias to zero
         if penultimate_layer.bias is not None:
             penultimate_layer.bias.data.zero_()
     
     return model
-
 
 def lsuv_init(model: DeepNN, X: torch.Tensor, needed_std: float = 1.0, tol: float = 0.1, max_iter: int = 10):
     """
@@ -130,7 +151,7 @@ def lsuv_init(model: DeepNN, X: torch.Tensor, needed_std: float = 1.0, tol: floa
     The weights are then scaled until the output standard deviation is approximately 'needed_std'.
     """
     model.eval()
-    for i, layer in enumerate(model.network):
+    for i, layer in enumerate(model.layers):
         if isinstance(layer, nn.Linear):
             outputs = []
             def hook(module, input, output):
@@ -160,6 +181,31 @@ def lsuv_init(model: DeepNN, X: torch.Tensor, needed_std: float = 1.0, tol: floa
     return model
 
 
+def compute_features_before_last_linear(model: DeepNN, X: torch.Tensor):
+    """
+    Helper function to compute features before the last linear layer.
+    """
+    features = X
+    linear_layers = []
+    
+    # Find all linear layers
+    for i, layer in enumerate(model.layers):
+        if isinstance(layer, nn.Linear):
+            linear_layers.append(i)
+    
+    if not linear_layers:
+        return features
+    
+    last_linear_idx = linear_layers[-1]
+    
+    # Process through all layers up to (but not including) the last linear layer
+    for i, layer in enumerate(model.layers):
+        if i < last_linear_idx:
+            features = layer(features)
+    
+    return features
+
+
 def kernel_loss(model: DeepNN, X: torch.Tensor, target_kernel: torch.Tensor,
                 lambda_eig: float = 1.0, use_log: bool = True,
                 top_k: int = 20, lambda_top: float = 1e4,
@@ -174,10 +220,8 @@ def kernel_loss(model: DeepNN, X: torch.Tensor, target_kernel: torch.Tensor,
         eig_scale: multiplier for the eigenvalue loss term.
         rank_preservation_weight: weight for the rank preservation penalty (if > 0, penalizes low-rank features).
     """
-    # Compute penultimate features.
-    features = X
-    for layer in model.network[:-1]:
-        features = layer(features)
+    # Compute penultimate features
+    features = compute_features_before_last_linear(model, X)
     N = features.shape[0]
     C_norm = features.T @ features / N
 
@@ -252,40 +296,102 @@ def compute_last_hidden_kernel_unnormalized_spectrum(model: DeepNN, X: torch.Ten
     Computes the eigenvalues of the unnormalized kernel (H^T H) of the penultimate layer.
     """
     with torch.no_grad():
+        # Get all linear layers
+        linear_layers = []
+        for i, layer in enumerate(model.layers):
+            if isinstance(layer, nn.Linear):
+                linear_layers.append(i)
+        
+        if len(linear_layers) < 2:
+            print("WARNING: Not enough linear layers to compute penultimate features")
+            return torch.zeros(1, device=X.device)  # Return dummy value
+            
+        # Get penultimate linear layer index
+        penultimate_linear_idx = linear_layers[-2]
+        
+        # Process through layers up to the penultimate linear + activation
         features = X
-        for layer in model.network[:-1]:
-            features = layer(features)
+        for i, layer in enumerate(model.layers):
+            if i <= penultimate_linear_idx + 1:  # +1 to include the activation after the linear layer
+                features = layer(features)
+                
+                # Debug: Check for NaNs or all zeros
+                if i == penultimate_linear_idx + 1:
+                    has_nan = torch.isnan(features).any().item()
+                    all_zeros = (features == 0).all().item()
+                    min_val = features.min().item()
+                    max_val = features.max().item()
+                    mean_val = features.mean().item()
+                    print(f"Penultimate features stats:")
+                    print(f"  Shape: {features.shape}")
+                    print(f"  Has NaN: {has_nan}")
+                    print(f"  All zeros: {all_zeros}")
+                    print(f"  Range: [{min_val}, {max_val}]")
+                    print(f"  Mean: {mean_val}")
+        
+        # Compute kernel matrix
         K_unnorm = features.T @ features
-        eigenvalues = torch.linalg.eigvalsh(K_unnorm)
+        
+        # Debug: Check kernel matrix
+        has_nan_kernel = torch.isnan(K_unnorm).any().item()
+        is_symmetric = torch.allclose(K_unnorm, K_unnorm.T, rtol=1e-5)
+        diag_mean = torch.diagonal(K_unnorm).mean().item()
+        print(f"Kernel matrix stats:")
+        print(f"  Shape: {K_unnorm.shape}")
+        print(f"  Has NaN: {has_nan_kernel}")
+        print(f"  Is symmetric: {is_symmetric}")
+        print(f"  Mean diagonal: {diag_mean}")
+        
+        # Compute eigenvalues
+        try:
+            eigenvalues = torch.linalg.eigvalsh(K_unnorm)
+            
+            # Debug: Check eigenvalues
+            has_nan_eig = torch.isnan(eigenvalues).any().item()
+            min_eig = eigenvalues.min().item()
+            max_eig = eigenvalues.max().item()
+            num_negative = (eigenvalues < 0).sum().item()
+            print(f"Eigenvalue stats:")
+            print(f"  Shape: {eigenvalues.shape}")
+            print(f"  Has NaN: {has_nan_eig}")
+            print(f"  Range: [{min_eig}, {max_eig}]")
+            print(f"  Number of negative eigenvalues: {num_negative}")
+            
+            return eigenvalues
+        except Exception as e:
+            print(f"Error computing eigenvalues: {e}")
+            return torch.zeros(K_unnorm.shape[0], device=X.device)
+    
     return eigenvalues
-
 
 def main():
     # --- Hyperparameters ---
-    d = 50                      # Input dimension.
-    hidden_size = 256           # Hidden layer (penultimate) size.
-    depth = 1                   # Total network depth.
+    d = 16                      # Input dimension.
+    hidden_size = 128           # Hidden layer (penultimate) size.
+    depth = 2                   # Total network depth.
     train_size = 300000         # Number of training samples.
-    mode = 'standard'       # Network mode.
-    alpha = 5.0                 # Use a milder decay exponent for a smoother target spectrum.
-    lambda_eig = 50.0          # Adjusted eigenvalue loss weight.
-    use_log = True             # Use logarithmic eigenvalue loss.
+    mode = 'standard_lr'        # Network mode.
+    alpha = 0.5                 # Use a milder decay exponent for a smoother target spectrum.
+    lambda_eig = 50.0           # Adjusted eigenvalue loss weight.
+    use_log = False             # Use logarithmic eigenvalue loss.
     epochs = 12000              # Training epochs.
-    lr = 5e-2                   # Learning rate.
-    top_k = 10                   # Number of top eigenvalues to match.
-    lambda_top = 200.0          # Adjusted top-k loss weight.
-    # Set the rank preservation weight (nonzero to add the penalty; adjust as needed)
+    lr = 8e-4                   # Learning rate.
+    top_k = 10                  # Number of top eigenvalues to match.
+    lambda_top = 10.0           # Adjusted top-k loss weight.
     rank_preservation_weight = 0.01  
     rank = 0                    # Rank for saving dataset.
-    effective_rank= 256 
+    effective_rank = 128
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
     
+    # --- Flags to toggle initialization methods ---
+    use_smart_init = True  # Set to False to disable smart initialization.
+    use_lsuv_init = True   # Set to False to disable LSUV initialization.
+    
     # --- Create the network and target kernel ---
     model = DeepNN(d, hidden_size, depth, mode=mode).to(device)
     target_kernel_norm, target_eigenvalues_norm = create_target_kernel(hidden_size, alpha, device, effective_rank=effective_rank)
-    #target_kernel_norm, target_eigenvalues_norm = create_target_kernel(hidden_size, alpha, device)
     print("\nTarget kernel eigenvalues (ascending):")
     print(target_eigenvalues_norm.detach().cpu().numpy())
     
@@ -300,19 +406,23 @@ def main():
     print("\nInput covariance eigenvalues (ascending):")
     print(input_eigvals.detach().cpu().numpy())
     
-    # --- Smart initialization using input statistics ---
-    print("\nPerforming smart initialization with input statistics...")
-    model = smart_initialize_with_input_stats_modified(model, target_kernel_used, X, small_bias=1e-2)
+    # --- Optionally apply smart initialization using input statistics ---
+    if use_smart_init:
+        print("\nPerforming smart initialization with input statistics...")
+        model = smart_initialize_with_input_stats_modified(model, target_kernel_used, X, small_bias=1e-2)
+    else:
+        print("\nSkipping smart initialization.")
     
-    # --- Data-dependent LSUV initialization on all layers ---
-    print("\nApplying LSUV initialization for data-dependent preconditioning...")
-    model = lsuv_init(model, X, needed_std=1.0, tol=0.1, max_iter=10)
+    # --- Optionally apply data-dependent LSUV initialization on all layers ---
+    if use_lsuv_init:
+        print("\nApplying LSUV initialization for data-dependent preconditioning...")
+        model = lsuv_init(model, X, needed_std=1.0, tol=0.1, max_iter=10)
+    else:
+        print("\nSkipping LSUV initialization.")
     
     # --- Verify the initial kernel spectrum ---
     with torch.no_grad():
-        features = X
-        for layer in model.network[:-1]:
-            features = layer(features)
+        features = compute_features_before_last_linear(model, X)
         initial_kernel = (features.T @ features) / train_size
         initial_eigvals = torch.linalg.eigvalsh(initial_kernel)
     print("\nInitial kernel eigenvalues after initialization (ascending):")
@@ -334,7 +444,7 @@ def main():
     # --- Save results and plots ---
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     smart_name = f"model_d{d}_hidden{hidden_size}_depth{depth}_alpha{alpha}_{timestamp}"
-    save_dir = os.path.join("/home/goring/TF_spectrum/results_pretrain_testgrid_2/",
+    save_dir = os.path.join("/home/goring/TF_spectrum/pretrain/pretrained_orthogonal_0103/",
                             f"results_2_{smart_name}")
     os.makedirs(save_dir, exist_ok=True)
     
