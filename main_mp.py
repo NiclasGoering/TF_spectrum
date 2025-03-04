@@ -24,7 +24,7 @@ def main():
     # ────────────── Set Restart Checkpoint (None for new run) ──────────────
     # Set to a full path if you wish to restart from an old checkpoint,
     # otherwise set restart_checkpoint = None for a fresh run.
-    restart_checkpoint = "/home/goring/TF_spectrum/results/results_correct_scaling/d10_hidden256_standard_2502/checkpoint_20250226_033859.txt"
+    restart_checkpoint = None
 
     # ────────────── MPI and Device Setup ──────────────
     comm = MPI.COMM_WORLD
@@ -54,16 +54,16 @@ def main():
     torch.set_default_dtype(torch.float32)
 
     # ────────────── Experiment and Hyperparameter Parameters ──────────────
-    experiment_name = "d50_normal_hidden10_d2_standard_0203"
-    d = 50
+    experiment_name = "d16_mup_hidden16_d2_0303"
+    d = 16
 
-    hidden_sizes = [10,128,256,1024]
-    #hidden_sizes.reverse()  # e.g. [512, 128, 256]
+    hidden_sizes = [64,256,1024]
+    hidden_sizes.reverse()  # e.g. [512, 128, 256]
     depths = [2]
     depths.reverse()       # e.g. [1]
 
     # Base width for learning rate scaling - reference width for scaling formula
-    base_width = 10  # New parameter for LR scaling
+    base_width = 64  # New parameter for LR scaling
 
     n_test = 20000
     batch_size = 64
@@ -72,17 +72,17 @@ def main():
     weight_decay = 0  # 1e-4
     
     # Mode options: 'standard_lr', 'ntk_lr', 'mup_lr', 'standard', 'ntk', 'mup'
-    mode = 'standard'
+    mode = 'mup'
     
     # Alignment option for learning rate scaling
-    alignment = False
+    alignment = True
     
     shuffled = False
     gamma = 1.0
     num_experiments = 1
-    learning_rates = [0.0001,0.001,0.01]
+    learning_rates = [0.001,0.0005]
 
-    n_train_sizes = [2**3, 2**7, 2**9, 2**10, 2**12, 2**14, 2**15, 2**16] # 2**17, 2**18
+    n_train_sizes = [2**3, 2**7, 2**9, 2**10,2**12, 2**14, 2**15, 2**16, 2**17, 2**18]
     #n_train_sizes.reverse()
 
     # If using a pre-initialized model.
@@ -97,15 +97,13 @@ def main():
 
     # ────────────── Dataset Paths and Names ──────────────
     dataset_paths = [
-"/home/goring/TF_spectrum/pretrain/pretrained_orthogonal_0103/PT_NP_d50_H10_D2_a20.0_NO_20250302_034640/dataset_NP_d50_H10_D2_a20.0_NO.pt",
-"/home/goring/TF_spectrum/pretrain/pretrained_orthogonal_0103/PT_NP_d50_H10_D2_a5.0_NO_20250302_034246/dataset_NP_d50_H10_D2_a5.0_NO.pt",
-"/home/goring/TF_spectrum/pretrain/pretrained_orthogonal_0103/PT_NP_d50_H10_D2_a2.0_NO_20250302_034246/dataset_NP_d50_H10_D2_a2.0_NO.pt",
-"/home/goring/TF_spectrum/pretrain/pretrained_orthogonal_0103/PT_NP_d50_H10_D2_a1.0_NO_20250302_034246/dataset_NP_d50_H10_D2_a1.0_NO.pt",
-"/home/goring/TF_spectrum/pretrain/pretrained_orthogonal_0103/PT_NP_d50_H10_D2_a0.5_NO_20250302_033943/dataset_NP_d50_H10_D2_a0.5_NO.pt",
-"/home/goring/TF_spectrum/pretrain/pretrained_orthogonal_0103/PT_NP_d50_H10_D2_a0.2_NO_20250302_033943/dataset_NP_d50_H10_D2_a0.2_NO.pt",
-"/home/goring/TF_spectrum/pretrain/pretrained_orthogonal_0103/PT_NP_d50_H10_D2_a0.0_NO_20250302_033943/dataset_NP_d50_H10_D2_a0.0_NO.pt"
+"/home/goring/TF_spectrum/pretrain/biggrid_0303/PT_NP_d16_H16_D2_a8.0_NO_2_20250303_034939/dataset_NP_d16_H16_D2_a8.0_NO_2.pt",
+"/home/goring/TF_spectrum/pretrain/biggrid_0303/PT_NP_d16_H16_D2_a4.0_NO_1_20250303_034940/dataset_NP_d16_H16_D2_a4.0_NO_1.pt",
+"/home/goring/TF_spectrum/pretrain/biggrid_0303/PT_NP_d16_H16_D2_a1.0_NO_1_20250303_033700/dataset_NP_d16_H16_D2_a1.0_NO_1.pt",
+"/home/goring/TF_spectrum/pretrain/biggrid_0303/PT_NP_d16_H16_D2_a0.5_NO_1_20250303_033700/dataset_NP_d16_H16_D2_a0.5_NO_1.pt",
+"/home/goring/TF_spectrum/pretrain/biggrid_0303/PT_NP_d16_H16_D2_a0.0_NO_3_20250303_034518/dataset_NP_d16_H16_D2_a0.0_NO_3.pt"
     ]
-    dataset_names = ["a20","a5","a2","a1","a05","a025","a0"]
+    dataset_names = ["a8","a4","a1","a05","a0"]
 
     # ────────────── Base Results Directory and Timestamp ──────────────
     base_results_dir = f"//home/goring/TF_spectrum/results/results_correct_scaling/{experiment_name}"

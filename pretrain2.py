@@ -530,34 +530,42 @@ def main():
     
     # --- Hyperparameters ---
     # Define distributions to explore
-    distributions = ['normal'] #'uniform', 'spiked_normal'
+    distributions = ['normal','uniform', 'spiked_normal'] #'uniform', 'spiked_normal'
     
     # Set a single spectrum type (choose one of: 'polynomial', 'exponential', 'linear')
     spectrum_type = 'polynomial'
     
     # Dimensions to explore
-    dimensions = [50]  
+    dimensions = [16]  
     
     # Alpha values to explore for the selected spectrum type
-    alpha_values = [10.0]
+    alpha_values = [0,0.5,1.0]
     
     # Spiked normal hyperparameter values
-    r_values = [0.7]  # Exponent for d^r in spiked normal
+    r_values = [0.8]  # Exponent for d^r in spiked normal
     
     # New hyperparameter for orthogonal readout layer
-    orthogonal = False  # Set to True to make readout layer orthogonal
+    orthogonal = True  # Set to True to make readout layer orthogonal
     
-    # Calculate total number of combinations
+    # New hyperparameter for number of experiments
+    num_experiments = 3  # Number of experiments to run with different random seeds
+    
+    # Hidden layer sizes to explore
+    hidden_sizes = [4,8,16,32,64]  # Multiple hidden sizes to explore
+    
+    # Calculate total number of combinations including hidden_sizes and experiment numbers
     total_combinations = []
     for dist in distributions:
         for alpha in alpha_values:
-            if dist == 'spiked_normal':
-                for dim in dimensions:
-                    for r_val in r_values:
-                        total_combinations.append((dist, dim, alpha, r_val))
-            else:
-                for dim in dimensions:
-                    total_combinations.append((dist, dim, alpha, None))
+            for hidden_size in hidden_sizes:
+                for exp_num in range(1, num_experiments + 1):
+                    if dist == 'spiked_normal':
+                        for dim in dimensions:
+                            for r_val in r_values:
+                                total_combinations.append((dist, dim, alpha, r_val, hidden_size, exp_num))
+                    else:
+                        for dim in dimensions:
+                            total_combinations.append((dist, dim, alpha, None, hidden_size, exp_num))
     
     # Distribute combinations across MPI processes
     num_combinations = len(total_combinations)
@@ -569,18 +577,16 @@ def main():
     my_combinations = total_combinations[start_idx:end_idx]
     
     # Common hyperparameters
-    hidden_size = 10           # Hidden layer (penultimate) size.
     depth = 2                   # Total network depth.
     train_size = 300000         # Number of training samples.
     mode = 'standard_lr'        # Network mode.
-    use_log = True             # Use logarithmic eigenvalue loss.
-    epochs = 20000              # Training epochs.
-    lr = 8e-5                   # Learning rate.
-    top_k = 1                  # Number of top eigenvalues to match.
+    use_log = False             # Use logarithmic eigenvalue loss.
+    epochs = 10000              # Training epochs.
+    lr = 8e-4                   # Learning rate.
+    top_k = 4                  # Number of top eigenvalues to match.
     lambda_top = 5.0           # Adjusted top-k loss weight.
     lambda_eig = 50.0           # Adjusted eigenvalue loss weight.
-    rank_preservation_weight = 0.5 #0.01  
-    effective_rank = hidden_size
+    rank_preservation_weight = 0.05 #0.01  
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     if rank == 0:
@@ -589,6 +595,8 @@ def main():
         print(f"Number of MPI processes: {size}")
         print(f"Using spectrum type: {spectrum_type}")
         print(f"Orthogonal readout layer: {orthogonal}")
+        print(f"Number of experiments per combination: {num_experiments}")
+        print(f"Hidden sizes to explore: {hidden_sizes}")
     
     # --- Flags to toggle initialization methods ---
     use_smart_init = True  # Set to False to disable smart initialization.
@@ -598,24 +606,33 @@ def main():
     spec_abbr = {'polynomial': 'P', 'exponential': 'E', 'linear': 'L'}[spectrum_type]
     
     # Process each combination assigned to this rank
-    for dist_type, d, alpha, r_value in my_combinations:
+    for dist_type, d, alpha, r_value, hidden_size, exp_num in my_combinations:
         # Create compact abbreviations for naming
         dist_abbr = {'normal': 'N', 'uniform': 'U', 'spiked_normal': 'SN'}[dist_type]
         
         # Create a compact name for this combination
         if dist_type == 'spiked_normal':
-            run_name = f"{dist_abbr}_r{r_value}_{spec_abbr}_d{d}_a{alpha:.1f}_{'O' if orthogonal else 'NO'}"
+            run_name = f"{dist_abbr}_r{r_value}_{spec_abbr}_d{d}_H{hidden_size}_a{alpha:.1f}_{'O' if orthogonal else 'NO'}"
         else:
-            run_name = f"{dist_abbr}_{spec_abbr}_d{d}_a{alpha:.1f}_{'O' if orthogonal else 'NO'}"
+            run_name = f"{dist_abbr}_{spec_abbr}_d{d}_H{hidden_size}_a{alpha:.1f}_{'O' if orthogonal else 'NO'}"
             
-        print(f"Process {rank} starting {run_name}")
+        print(f"Process {rank} starting {run_name} (Exp {exp_num})")
+        
+        # Set seed based on experiment number to ensure reproducibility but uniqueness between runs
+        seed = 42 + exp_num
+        torch.manual_seed(seed)
+        np.random.seed(seed)
         
         # --- Create the network and target kernel ---
         model = DeepNN(d, hidden_size, depth, mode=mode).to(device)
+        
+        # Set effective rank to hidden_size
+        effective_rank = hidden_size
+        
         target_kernel_norm, target_eigenvalues_norm = create_target_kernel(
             hidden_size, alpha, device, spectrum_type=spectrum_type, effective_rank=effective_rank)
         
-        print(f"\nTarget kernel eigenvalues for {run_name} (ascending):")
+        print(f"\nTarget kernel eigenvalues for {run_name} (Exp {exp_num}) (ascending):")
         print(target_eigenvalues_norm.detach().cpu().numpy())
         
         target_kernel_used = target_kernel_norm
@@ -627,22 +644,22 @@ def main():
         input_stats = (X.T @ X) / train_size
         input_eigvals = torch.linalg.eigvalsh(input_stats)
         
-        print(f"\nInput covariance eigenvalues for {run_name} (ascending):")
+        print(f"\nInput covariance eigenvalues for {run_name} (Exp {exp_num}) (ascending):")
         print(input_eigvals.detach().cpu().numpy())
         
         # --- Optionally apply smart initialization using input statistics ---
         if use_smart_init:
-            print(f"\nPerforming smart initialization for {run_name}...")
+            print(f"\nPerforming smart initialization for {run_name} (Exp {exp_num})...")
             model = smart_initialize_with_input_stats_modified(model, target_kernel_used, X, small_bias=1e-2)
         
         # --- Optionally apply data-dependent LSUV initialization on all layers ---
         if use_lsuv_init:
-            print(f"\nApplying LSUV initialization for {run_name}...")
+            print(f"\nApplying LSUV initialization for {run_name} (Exp {exp_num})...")
             model = lsuv_init(model, X, needed_std=1.0, tol=0.1, max_iter=10)
         
         # --- Apply orthogonal constraint to readout layer if enabled ---
         if orthogonal:
-            print(f"\nApplying orthogonal constraint to readout layer for {run_name}...")
+            print(f"\nApplying orthogonal constraint to readout layer for {run_name} (Exp {exp_num})...")
             model = apply_orthogonal_constraint(model)
         
         # --- Verify the initial kernel spectrum ---
@@ -651,11 +668,11 @@ def main():
             initial_kernel = (features.T @ features) / train_size
             initial_eigvals = torch.linalg.eigvalsh(initial_kernel)
         
-        print(f"\nInitial kernel eigenvalues for {run_name} after initialization (ascending):")
+        print(f"\nInitial kernel eigenvalues for {run_name} (Exp {exp_num}) after initialization (ascending):")
         print(initial_eigvals.detach().cpu().numpy())
         
         # --- Fine-tune the network ---
-        print(f"\nStarting training for {run_name}...")
+        print(f"\nStarting training for {run_name} (Exp {exp_num})...")
         model = train_kernel_modified(model, X, target_kernel_used, epochs=epochs, lr=lr,
                                      lambda_eig=lambda_eig, use_log=use_log,
                                      top_k=top_k, lambda_top=lambda_top, orthogonal=orthogonal)
@@ -670,13 +687,13 @@ def main():
         # --- Save results and plots ---
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
-        # Create a compact name that includes all relevant information
+        # Create a compact name that includes all relevant information and experiment number
         if dist_type == 'spiked_normal':
-            smart_name = f"{dist_abbr}{spec_abbr}_d{d}_r{r_value}_H{hidden_size}_D{depth}_a{alpha:.1f}_{'O' if orthogonal else 'NO'}"
+            smart_name = f"{dist_abbr}{spec_abbr}_d{d}_r{r_value}_H{hidden_size}_D{depth}_a{alpha:.1f}_{'O' if orthogonal else 'NO'}_{exp_num}"
         else:
-            smart_name = f"{dist_abbr}{spec_abbr}_d{d}_H{hidden_size}_D{depth}_a{alpha:.1f}_{'O' if orthogonal else 'NO'}"
+            smart_name = f"{dist_abbr}{spec_abbr}_d{d}_H{hidden_size}_D{depth}_a{alpha:.1f}_{'O' if orthogonal else 'NO'}_{exp_num}"
         
-        save_dir = os.path.join("/home/goring/TF_spectrum/pretrain/pretrained_orthogonal_0103/",
+        save_dir = os.path.join("/home/goring/TF_spectrum/pretrain/biggrid_0403/",
                                 f"PT_{smart_name}_{timestamp}")
         os.makedirs(save_dir, exist_ok=True)
         
@@ -687,7 +704,7 @@ def main():
                   label='Last Hidden Kernel Spectrum', markersize=4)
         plt.xlabel('Index')
         plt.ylabel('Eigenvalue')
-        plt.title(f'Kernel Spectrum Comparison for {run_name} (Log-Log)')
+        plt.title(f'Kernel Spectrum Comparison for {run_name} (Exp {exp_num}) (Log-Log)')
         plt.legend()
         plt.grid(True, which="both", ls="-", alpha=0.2)
         plot_path = os.path.join(save_dir, f'spectrum_{smart_name}.png')
@@ -713,7 +730,10 @@ def main():
                 'top_k': top_k,
                 'lambda_top': lambda_top,
                 'rank_preservation_weight': rank_preservation_weight,
-                'orthogonal_readout': orthogonal  # Added this parameter
+                'orthogonal_readout': orthogonal,
+                'experiment_number': exp_num,
+                'num_experiments': num_experiments,
+                'random_seed': seed
             },
             'unnormalized_target_spectrum': target_spec.tolist(),
             'unnormalized_last_hidden_spectrum': last_hidden_spec.tolist(),
@@ -721,7 +741,7 @@ def main():
             'input_covariance_spectrum': input_eigvals.detach().cpu().numpy().tolist()
         }
         save_results([results], save_dir, smart_name)
-        print(f"Saved results for {run_name} (hyperparameters and spectra).")
+        print(f"Saved results for {run_name} (Exp {exp_num}) (hyperparameters and spectra).")
         
         with torch.no_grad():
             y = model(X)
@@ -730,19 +750,19 @@ def main():
         
         target_kernel_path = os.path.join(save_dir, f"target_kernel_{smart_name}.pt")
         torch.save(target_kernel_used.detach().cpu(), target_kernel_path)
-        print(f"Saved target kernel for {run_name} to {target_kernel_path}")
+        print(f"Saved target kernel for {run_name} (Exp {exp_num}) to {target_kernel_path}")
         
         model_path = os.path.join(save_dir, f"model_{smart_name}.pt")
         save_model(model, model_path)
-        print(f"Saved model for {run_name} to {model_path}")
+        print(f"Saved model for {run_name} (Exp {exp_num}) to {model_path}")
         
-        print(f"\nFinal spectrum comparison summary for {run_name}:")
+        print(f"\nFinal spectrum comparison summary for {run_name} (Exp {exp_num}):")
         print(f"Target spectrum range: [{target_spec[-1]:.2e}, {target_spec[0]:.2e}]")
         print(f"Achieved spectrum range: [{last_hidden_spec[-1]:.2e}, {last_hidden_spec[0]:.2e}]")
         print(f"Condition numbers - Target: {target_spec[0]/(target_spec[-1]+1e-12):.2e}, "
               f"Achieved: {last_hidden_spec[0]/(last_hidden_spec[-1]+1e-12):.2e}")
         
-        # Clean up to save memory before next combination
+        # Clean up to save memory before next experiment/combination
         del model, X
         torch.cuda.empty_cache() if torch.cuda.is_available() else None
 

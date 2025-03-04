@@ -1,0 +1,47 @@
+# Base configuration that contains common settings
+base_config:
+  base_results_dir: "/home/goring/TF_spectrum/results/structured_experiments"
+  epochs: 3000
+  batch_size: 64
+  checkpoint_epochs: []
+  weight_decay: 0
+  n_test: 20000
+  save_model: false
+  normalize_data: false
+  num_experiments: 2
+  restart_checkpoint: null
+
+# Sweeps with their specific dataset paths
+sweeps:
+  # Learning rate sweep for first dataset group
+  lr_sweep_group1:
+    dataset_paths:
+      - "/home/goring/TF_spectrum/pretrain/pretrained_model_0103/PT_NL_d16_H128_D2_a0.5_20250301_032406"
+      - "/home/goring/TF_spectrum/pretrain/pretrained_model_0103/PT_NL_d16_H128_D2_a1.0_20250301_032406"
+      - "/home/goring/TF_spectrum/pretrain/pretrained_model_0103/PT_NL_d16_H128_D2_a2.0_20250301_032406"
+    parameters:
+      hidden_sizes: [128, 256]  # Width parameter
+      depths: [2]  # Depth parameter
+      base_width: 128  # Base width parameter
+      learning_rates: [0.0001, 0.0005, 0.001, 0.005, 0.01]
+      n_train: [10000]
+      modes: ["standard", "ntk"]
+      alignment: [true]
+  
+  # Different learning rate sweep for second dataset group
+  lr_sweep_group2:
+    dataset_paths:
+      - "/home/goring/TF_spectrum/pretrain/pretrained_model_2802/PT_SNL_d16_r0.7_H128_D2_a5.0_20250228_164308"
+      -  "/home/goring/TF_spectrum/pretrain/pretrained_model_2802/PT_SNL_d16_r0.7_H128_D2_a50.0_20250228_172239"
+      -  "/home/goring/TF_spectrum/pretrain/pretrained_model_2802/PT_SNL_d16_r0.7_H128_D2_a1.0_20250228_155359"
+      -  "/home/goring/TF_spectrum/pretrain/pretrained_model_2802/PT_SNL_d16_r0.7_H128_D2_a0.5_20250228_153303"
+      -  "/home/goring/TF_spectrum/pretrain/pretrained_model_2802/PT_SNL_d16_r0.7_H128_D2_a0.2_20250228_152431"
+    parameters:
+      hidden_sizes: [10, 128, 256]  # Width parameter
+      depths: [2, 3]  # Depth parameter
+      base_width: 10  # Base width parameter
+      learning_rates: [0.001, 0.005, 0.01, 0.05]
+      n_train: [8192]
+      modes: ["standard", "mup"]
+      alignment: [false]
+  
