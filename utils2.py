@@ -1,4 +1,3 @@
-
 import torch
 import torch.nn as nn
 import numpy as np
@@ -7,6 +6,16 @@ import json
 from datetime import datetime
 import os
 
+# In utils2.py (add this class)
+class GPUTensorDataset(torch.utils.data.Dataset):
+    def __init__(self, *tensors):
+        self.tensors = tensors
+        
+    def __getitem__(self, index):
+        return tuple(tensor[index] for tensor in self.tensors)
+    
+    def __len__(self):
+        return self.tensors[0].size(0)
 
 def save_dataset(X: torch.Tensor, y: torch.Tensor, path: str, rank: int, min_size_bytes: int = 1000):
     """Helper function to save dataset with built-in verification"""

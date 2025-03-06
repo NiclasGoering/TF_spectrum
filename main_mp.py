@@ -54,10 +54,10 @@ def main():
     torch.set_default_dtype(torch.float32)
 
     # ────────────── Experiment and Hyperparameter Parameters ──────────────
-    experiment_name = "d16_mup_hidden16_d2_0303"
-    d = 16
+    experiment_name = "d128_standard_staircase_d2_0303"
+    d = 128
 
-    hidden_sizes = [64,256,1024]
+    hidden_sizes = [128,256,1024]
     hidden_sizes.reverse()  # e.g. [512, 128, 256]
     depths = [2]
     depths.reverse()       # e.g. [1]
@@ -72,7 +72,7 @@ def main():
     weight_decay = 0  # 1e-4
     
     # Mode options: 'standard_lr', 'ntk_lr', 'mup_lr', 'standard', 'ntk', 'mup'
-    mode = 'mup'
+    mode = 'standard_lr'
     
     # Alignment option for learning rate scaling
     alignment = True
@@ -80,7 +80,7 @@ def main():
     shuffled = False
     gamma = 1.0
     num_experiments = 1
-    learning_rates = [0.001,0.0005]
+    learning_rates = [0.001,0.0005,0.005]
 
     n_train_sizes = [2**3, 2**7, 2**9, 2**10,2**12, 2**14, 2**15, 2**16, 2**17, 2**18]
     #n_train_sizes.reverse()
@@ -97,13 +97,9 @@ def main():
 
     # ────────────── Dataset Paths and Names ──────────────
     dataset_paths = [
-"/home/goring/TF_spectrum/pretrain/biggrid_0303/PT_NP_d16_H16_D2_a8.0_NO_2_20250303_034939/dataset_NP_d16_H16_D2_a8.0_NO_2.pt",
-"/home/goring/TF_spectrum/pretrain/biggrid_0303/PT_NP_d16_H16_D2_a4.0_NO_1_20250303_034940/dataset_NP_d16_H16_D2_a4.0_NO_1.pt",
-"/home/goring/TF_spectrum/pretrain/biggrid_0303/PT_NP_d16_H16_D2_a1.0_NO_1_20250303_033700/dataset_NP_d16_H16_D2_a1.0_NO_1.pt",
-"/home/goring/TF_spectrum/pretrain/biggrid_0303/PT_NP_d16_H16_D2_a0.5_NO_1_20250303_033700/dataset_NP_d16_H16_D2_a0.5_NO_1.pt",
-"/home/goring/TF_spectrum/pretrain/biggrid_0303/PT_NP_d16_H16_D2_a0.0_NO_3_20250303_034518/dataset_NP_d16_H16_D2_a0.0_NO_3.pt"
+"/home/goring/TF_spectrum/pretrain/staircase/hier_k115_k280_p150_p240_H128_20250305_154136/dataset.pt",
     ]
-    dataset_names = ["a8","a4","a1","a05","a0"]
+    dataset_names = ["a8"]
 
     # ────────────── Base Results Directory and Timestamp ──────────────
     base_results_dir = f"//home/goring/TF_spectrum/results/results_correct_scaling/{experiment_name}"
