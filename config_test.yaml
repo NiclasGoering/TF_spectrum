@@ -1,7 +1,7 @@
 # Base configuration that contains common settings
 base_config:
-  base_results_dir: "/home/goring/TF_spectrum/results/biggrid2_0503"
-  epochs: 3000
+  base_results_dir: "/home/goring/TF_spectrum/results/biggrid_finetune_standard_Hvary_0603"
+  epochs: 5000
   batch_size: 16384 
   checkpoint_epochs: []
   weight_decay: 0
@@ -9,7 +9,7 @@ base_config:
   save_model: false
   normalize_data: false
   num_experiments: 1
-  restart_checkpoint: "/home/goring/TF_spectrum/results/biggrid2_0503/sweep_d16_H4_sweep_d16H8_sweep_d16H16_sweep_d16H32_sweep_d16H64_exp_20250306/checkpoint_20250306_014520.txt"  #null
+  restart_checkpoint: null  #null
 
 # Sweeps with their specific dataset paths
 sweeps:
@@ -62,13 +62,13 @@ sweeps:
       -  "/home/goring/TF_spectrum/pretrain/biggrid_0403_exp/PT_NE_d16_H4_D2_a0.0_O_3_20250304_235256"
       -  "/home/goring/TF_spectrum/pretrain/biggrid_0403_exp/PT_NE_d16_H4_D2_a0.0_O_1_20250304_235256"
     parameters:
-      hidden_sizes: [256]  # Width parameter
+      hidden_sizes: [512,1024,2048]  # Width parameter
       depths: [2]  # Depth parameter
-      base_width: 128   # Base width parameter
-      learning_rates: [0.00006, 0.00012, 0.0006]
+      base_width: 256   # Base width parameter
+      learning_rates: [0.0006]
       n_train: [10,100,1000,10000,50000,100000,150000,200000]
-      modes: ["standard_lr"]
-      alignment: [False]
+      modes: ["standard"]
+      alignment: [True]
   
   # Different learning rate sweep for second dataset group
   sweep_d16H8:
@@ -119,13 +119,13 @@ sweeps:
       -  "/home/goring/TF_spectrum/pretrain/biggrid_0403_exp/PT_NE_d16_H8_D2_a8.0_O_2_20250305_004514"
       -  "/home/goring/TF_spectrum/pretrain/biggrid_0403_exp/PT_NE_d16_H8_D2_a8.0_O_3_20250305_004514"
     parameters:
-      hidden_sizes: [256]  # Width parameter
+      hidden_sizes: [512,1024,2048]  # Width parameter
       depths: [2]  # Depth parameter
-      base_width: 128  # Base width parameter
-      learning_rates: [0.00006, 0.00012, 0.0006]
+      base_width: 256  # Base width parameter
+      learning_rates: [0.0006]
       n_train: [10,100,1000,10000,50000,100000,150000,200000]
-      modes: ["standard_lr"]
-      alignment: [False]
+      modes: ["standard"]
+      alignment: [True]
   
   sweep_d16H16:
     dataset_paths:
@@ -176,13 +176,13 @@ sweeps:
       -  "/home/goring/TF_spectrum/pretrain/biggrid_0403_exp/PT_NE_d16_H16_D2_a8.0_O_3_20250305_004514"
 
     parameters:
-      hidden_sizes: [256]  # Width parameter
+      hidden_sizes: [512,1024,2048]  # Width parameter
       depths: [2]  # Depth parameter
-      base_width: 128  # Base width parameter
-      learning_rates: [0.00006, 0.00012, 0.0006]
+      base_width: 256  # Base width parameter
+      learning_rates: [0.0006]
       n_train: [10,100,1000,10000,50000,100000,150000,200000]
-      modes: ["standard_lr"]
-      alignment: [False]
+      modes: ["standard"]
+      alignment: [True]
   
   sweep_d16H32:
     dataset_paths:
@@ -233,13 +233,13 @@ sweeps:
       -  "/home/goring/TF_spectrum/pretrain/biggrid_0403_exp/PT_NE_d16_H32_D2_a8.0_O_3_20250305_004936"
 
     parameters:
-      hidden_sizes: [256]  # Width parameter
+      hidden_sizes: [512,1024,2048]  # Width parameter
       depths: [2]  # Depth parameter
-      base_width: 128   # Base width parameter
-      learning_rates: [0.00006, 0.00012, 0.0006]
+      base_width: 256   # Base width parameter
+      learning_rates: [0.0006]
       n_train: [10,100,1000,10000,50000,100000,150000,200000]
-      modes: ["standard_lr"]
-      alignment: [False]
+      modes: ["standard"]
+      alignment: [True]
   
   sweep_d16H64:
     dataset_paths:
@@ -291,10 +291,10 @@ sweeps:
 
 
     parameters:
-      hidden_sizes: [256]  # Width parameter
+      hidden_sizes: [512,1024,2048]  # Width parameter
       depths: [2]  # Depth parameter
-      base_width: 128   # Base width parameter
-      learning_rates: [0.00006, 0.00012, 0.0006]
+      base_width: 256   # Base width parameter
+      learning_rates: [0.0006]
       n_train: [10,100,1000,10000,50000,100000,150000,200000]
-      modes: ["standard_lr"]
-      alignment: [False]
+      modes: ["standard"]
+      alignment: [True]

@@ -136,12 +136,9 @@ def train_and_evaluate(
     eval_interval: int = 250,
     eval_print_interval: int = 500,
     eval_batch_size: int = 16384,
-    early_stop_threshold: float = 1e-4
-) -> Tuple[float, float, float, dict, Dict[int, nn.Module]]:
-    """
-    Train the model with data directly on GPU for maximum efficiency.
-    Early stops if training error falls below early_stop_threshold.
-    """
+    early_stop_threshold: float = 1e-4,
+    fine_tuning_epochs: int = 500,  # Add fine tuning epochs parameter
+):
     import math
     
     # Get device from model
@@ -191,11 +188,30 @@ def train_and_evaluate(
     for param_group in optimizer.param_groups:
         param_group['initial_lr'] = param_group['lr']
     
-    # Add warmup period
-    warmup_epochs = min(100, epochs // 25)
+    # Calculate total training epochs including fine tuning
+    main_epochs = epochs - fine_tuning_epochs
     
-    # Use cosine annealing LR after warmup
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs - warmup_epochs)
+    # Add warmup period - scale based on dataset size
+    warmup_epochs = min(100, main_epochs // 25)
+    
+    # Adjust cosine annealing cycle length based on dataset size
+    if len(X_train) >= 10000:
+        # Slower decay for larger datasets
+        cycle_epochs = main_epochs - warmup_epochs
+        # Use multiple cycles for larger datasets
+        n_cycles = max(1, int(len(X_train) / 5000))
+        cycle_length = cycle_epochs // n_cycles
+    else:
+        # Single cycle for smaller datasets
+        cycle_length = main_epochs - warmup_epochs
+    
+    # Use cosine annealing LR with restarts for main training phase
+    scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(
+        optimizer, 
+        T_0=cycle_length,
+        T_mult=1,  # Keep same period for each restart
+        eta_min=lr/50  # Don't let LR go all the way to zero
+    )
 
     # Use fixed indices for evaluation subset - critical for consistency
     subset_size = min(20000, len(X_train))
@@ -236,7 +252,8 @@ def train_and_evaluate(
     checkpoint_epochs = sorted(checkpoint_epochs)
     next_ckpt_idx = 0
     
-    for epoch in range(epochs):
+    # Main training loop with mixed precision
+    for epoch in range(main_epochs):
         model.train()
         
         # Apply warmup scaling to learning rate
@@ -308,7 +325,7 @@ def train_and_evaluate(
             scheduler.step()
 
         # Periodically evaluate with the same consistent subset
-        if epoch % eval_interval == 0 or epoch == epochs - 1:
+        if epoch % eval_interval == 0 or epoch == main_epochs - 1:
             model.eval()
             train_error = evaluate_error(model, X_train[subset_indices], y_train[subset_indices])
             test_error = evaluate_error(model, X_test, y_test)
@@ -319,7 +336,7 @@ def train_and_evaluate(
             error_history['test_errors'].append(test_error)
             error_history['epochs'].append(epoch)
 
-            if epoch % eval_print_interval == 0 or epoch == epochs - 1:
+            if epoch % eval_print_interval == 0 or epoch == main_epochs - 1:
                 print(f"Epoch {epoch}:")
                 print(f"   Training Error (subset): {train_error:.6f}")
                 print(f"   Test Error:              {test_error:.6f} (Best: {best_test_error:.6f})")
@@ -359,8 +376,92 @@ def train_and_evaluate(
             torch.save(checkpoint_model.state_dict(), ckpt_path)
             next_ckpt_idx += 1
     
+    # Add fine-tuning phase with full precision for last epochs
+    if not (epoch < main_epochs and train_error < early_stop_threshold):  # Only if we didn't early stop
+        print(f"Starting fine-tuning phase with full precision for {fine_tuning_epochs} epochs")
+        
+        # Calculate last training error for reference
+        last_train_error = train_error
+        
+        # Create a fine-tuning scheduler with gradual decay - more conservative
+        # Start from a reasonable value (half the original) rather than drastically reducing
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = lr / 2  # Start at half the base rate
+            
+        ft_scheduler = optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=fine_tuning_epochs,
+            eta_min=lr/20  # Lower bound, but not too small
+        )
+        
+        # Fine-tuning with full precision
+        for ft_epoch in range(fine_tuning_epochs):
+            epoch = main_epochs + ft_epoch
+            model.train()
+            
+            # Training loop with full precision (no mixed precision)
+            if use_direct_training:
+                optimizer.zero_grad(set_to_none=True)
+                # Full precision training
+                output = model(X_train)
+                loss = torch.mean((output - y_train) ** 2)
+                loss.backward()
+                grad_scale_fn()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                optimizer.step()
+            else:
+                for batch_X, batch_y in train_loader:
+                    optimizer.zero_grad(set_to_none=True)
+                    # Full precision training
+                    output = model(batch_X)
+                    loss = torch.mean((output - batch_y) ** 2)
+                    loss.backward()
+                    grad_scale_fn()
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    optimizer.step()
+            
+            # Step the fine-tuning scheduler
+            ft_scheduler.step()
+            
+            # Evaluate at regular intervals during fine-tuning - more frequent evaluation
+            if ft_epoch % (eval_interval // 2) == 0 or ft_epoch == fine_tuning_epochs - 1:
+                model.eval()
+                train_error = evaluate_error(model, X_train[subset_indices], y_train[subset_indices])
+                test_error = evaluate_error(model, X_test, y_test)
+                best_test_error = min(best_test_error, test_error)
+                best_train_error = min(best_train_error, train_error)
+
+                error_history['train_errors'].append(train_error)
+                error_history['test_errors'].append(test_error)
+                error_history['epochs'].append(epoch)
+
+                # More detailed output during fine-tuning
+                current_lr = optimizer.param_groups[0]['lr']
+                print(f"Fine-tuning Epoch {ft_epoch}/{fine_tuning_epochs} (Total {epoch}):")
+                print(f"   Training Error (subset): {train_error:.8f}")
+                print(f"   Test Error:              {test_error:.8f} (Best: {best_test_error:.8f})")
+                print(f"   Learning Rate:           {current_lr:.8f}")
+                
+                # Calculate and print improvement from fine-tuning
+                improvement = last_train_error - train_error
+                improvement_pct = (improvement / last_train_error) * 100 if last_train_error > 0 else 0
+                print(f"   Improvement:             {improvement:.8f} ({improvement_pct:.2f}%)")
+                
+                # Check if we've reached desired precision - stricter threshold
+                if train_error < early_stop_threshold / 10:  # Use stricter threshold for fine-tuning
+                    print(f"[Fine-tuning complete] Training error {train_error:.8f} reached desired precision")
+                    break
+                
+                # If we're not making sufficient progress, adjust learning rate dynamically
+                if ft_epoch > 0 and ft_epoch % 100 == 0:
+                    if improvement < train_error * 0.01:  # Less than 1% improvement
+                        # Temporarily boost learning rate to escape potential local minimum
+                        print(f"   Progress slow, temporarily increasing learning rate")
+                        for param_group in optimizer.param_groups:
+                            param_group['lr'] = param_group['lr'] * 2
+    
     # Add early stopping info to history if we completed all epochs
-    if epoch == epochs - 1:
+    if not error_history.get('early_stopped', False):
         error_history['early_stopped'] = False
         error_history['stopped_epoch'] = epoch
 
@@ -369,7 +470,14 @@ def train_and_evaluate(
     final_train_error = evaluate_error(model, X_train[subset_indices], y_train[subset_indices])
     final_test_error = evaluate_error(model, X_test, y_test)
 
+    print(f"Final Results:")
+    print(f"   Initial Train Error:   {train_error_init:.8f}")
+    print(f"   Final Train Error:     {final_train_error:.8f}")
+    print(f"   Test Error:            {final_test_error:.8f}")
+    print(f"   Best Test Error:       {best_test_error:.8f}")
+
     return best_test_error, train_error_init, final_train_error, error_history, {}
+
 
 
 
