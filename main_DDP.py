@@ -3,6 +3,9 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data import TensorDataset, DataLoader, DistributedSampler
 from typing import List, Dict, Tuple, Any
 import random
 from functools import partial
@@ -14,18 +17,29 @@ import sys
 import glob
 from mpi4py import MPI
 import hashlib
-from torch.utils.data import TensorDataset, DataLoader
+from contextlib import contextmanager
 
-# Import your model and helper functions.
+# Import your model and helper functions
 from FFNN import DeepNN
 from utils2 import save_dataset, save_results, save_model
 from train2 import train_and_evaluate, shuffle_labels
-# In both files, add:
-from utils2 import GPUTensorDataset
+
+# Compatibility wrapper for autocast
+@contextmanager
+def compatible_autocast():
+    """
+    A compatibility wrapper for autocast that works with modern PyTorch
+    """
+    if torch.cuda.is_available():
+        with torch.amp.autocast(device_type="cuda"):
+            yield
+    else:
+        yield
 
 # Optimize CUDA settings
 torch.cuda.empty_cache()
 torch.backends.cuda.matmul.allow_tf32 = True  # Enable TF32 on Ampere+ GPUs
+torch.set_float32_matmul_precision('high')  # Use high precision for H100
 
 # Optimize memory allocation
 if torch.cuda.is_available():
@@ -33,17 +47,7 @@ if torch.cuda.is_available():
     torch.cuda.empty_cache()
     torch.backends.cudnn.benchmark = True
     torch.backends.cudnn.deterministic = False  # Faster at the cost of reproducibility
-
-# GPU dataset that stays on the device
-class GPUTensorDataset(torch.utils.data.Dataset):
-    def __init__(self, *tensors):
-        self.tensors = tensors
-        
-    def __getitem__(self, index):
-        return tuple(tensor[index] for tensor in self.tensors)
-    
-    def __len__(self):
-        return self.tensors[0].size(0)
+    torch.backends.cuda.enable_mem_efficient_sdp = True  # H100-specific
 
 # Ensure prints flush immediately
 print = partial(print, flush=True)
@@ -52,9 +56,6 @@ def load_yaml_config(config_path):
     """Load and return the configuration from a YAML file."""
     with open(config_path, 'r') as f:
         return yaml.safe_load(f)
-
-
-import os
 
 def extract_info_from_path(path):
     """
@@ -78,7 +79,6 @@ def extract_info_from_path(path):
     else:
         # If somehow not in poly/lin/exp, default to NP or raise an error.
         dist_type = "NP"
-        # or raise ValueError(f"Cannot determine distribution from path: {path}")
 
     # 2) Parse dimension tokens from the final folder name
     basename = os.path.basename(path)
@@ -120,8 +120,6 @@ def extract_info_from_path(path):
     
     return info
 
-
-
 def find_files_in_directory(directory, pattern):
     """Find files matching a pattern in a directory."""
     return glob.glob(os.path.join(directory, pattern))
@@ -136,12 +134,6 @@ def load_result_json(directory):
         except Exception as e:
             print(f"Error loading {result_files[0]}: {e}")
     return None
-
-
-
-import os
-import glob
-import json
 
 def load_dataset_info(directory):
     """
@@ -229,11 +221,6 @@ def load_dataset_info(directory):
         "params": params,
         "directory": directory
     }
-
-
-
-
-
 
 def load_dataset_with_cache(ds_path, rank, device):
     """
@@ -324,7 +311,6 @@ def generate_all_combinations(config):
     
     return all_combinations
 
-
 def generate_unique_id(config):
     import os
     
@@ -355,13 +341,92 @@ def generate_unique_id(config):
     
     return unique_id
 
+def setup_ddp(rank, world_size):
+    """
+    Initialize the distributed environment for DDP.
+    """
+    os.environ['MASTER_ADDR'] = 'localhost'
+    os.environ['MASTER_PORT'] = '29500'
+    
+    # Initialize process group
+    dist.init_process_group(
+        backend="nccl",
+        init_method="env://",
+        world_size=world_size,
+        rank=rank
+    )
+    
+    # Set device
+    torch.cuda.set_device(rank)
 
+def cleanup_ddp():
+    """
+    Clean up the distributed environment.
+    """
+    dist.destroy_process_group()
+
+def create_dataloaders(X_train, y_train, X_test, y_test, batch_size, world_size, rank):
+    """
+    Create distributed dataloaders for training.
+    """
+    # Create datasets
+    train_dataset = TensorDataset(X_train.cpu(), y_train.cpu())
+    test_dataset = TensorDataset(X_test.cpu(), y_test.cpu())
+    
+    # Create distributed samplers
+    train_sampler = DistributedSampler(
+        train_dataset,
+        num_replicas=world_size,
+        rank=rank,
+        shuffle=True
+    )
+    
+    # Create dataloaders with multiple workers
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        sampler=train_sampler,
+        num_workers=4,
+        pin_memory=True,
+        persistent_workers=True
+    )
+    
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=batch_size * 2,
+        shuffle=False,
+        num_workers=2,
+        pin_memory=True
+    )
+    
+    return train_loader, test_loader, train_sampler
 
 def main():
     if len(sys.argv) < 2:
         print("Usage: python main.py <config_file.yaml>")
         sys.exit(1)
     
+    # ────────────── Initialize DDP and MPI ──────────────
+    # Initialize MPI for compatibility with existing code
+    comm = MPI.COMM_WORLD
+    rank = comm.Get_rank()
+    world_size = comm.Get_size()
+    
+    # Set up PyTorch distributed - use GPU ID based on rank
+    num_gpus = torch.cuda.device_count()
+    if rank >= num_gpus:
+        print(f"ERROR: Rank {rank} exceeds available GPUs ({num_gpus})")
+        sys.exit(1)
+    
+    # Set up DDP - each process gets one GPU
+    setup_ddp(rank, world_size)
+    device = torch.device(f'cuda:{rank}')
+    
+    if rank == 0:
+        print(f"[Rank 0] Using PyTorch Distributed with {world_size} processes")
+        print(f"[Rank 0] Available GPUs: {num_gpus}")
+    
+    # ────────────── Load Configuration ──────────────
     config_path = sys.argv[1]
     config = load_yaml_config(config_path)
     
@@ -379,44 +444,6 @@ def main():
     save_model_flag = base_cfg.get("save_model", False)
     normalize_data = base_cfg.get("normalize_data", False)
     
-    # ────────────── MPI and Device Setup ──────────────
-    comm = MPI.COMM_WORLD
-    rank = comm.Get_rank()
-    size = comm.Get_size()
-
-    num_gpus = torch.cuda.device_count()
-
-    # H100 GPU optimizations
-    if torch.cuda.is_available():
-        # Calculate workers per GPU and adjust memory fraction
-        if num_gpus > 0:
-            workers_per_gpu = size // num_gpus
-            mem_fraction = 0.95 / workers_per_gpu  # Scale down for more workers
-            torch.cuda.memory.set_per_process_memory_fraction(mem_fraction)
-        
-        torch.cuda.empty_cache()
-        torch.backends.cuda.matmul.allow_tf32 = True
-        torch.backends.cuda.enable_mem_efficient_sdp = True  # H100-specific
-        torch.backends.cudnn.benchmark = True
-        
-        # GPU assignment
-        gpu_id = rank % num_gpus
-        torch.cuda.set_device(gpu_id)  # Set before any tensor operations
-        device = torch.device(f'cuda:{gpu_id}')
-        print(f"[Rank {rank}] Assigned to GPU {gpu_id}, {workers_per_gpu} workers per GPU, memory fraction: {mem_fraction:.3f}")
-    else:
-        device = torch.device('cpu')
-
-    if rank == 0:
-        print(f"[Rank 0] Number of available GPUs: {num_gpus}")
-        print(f"[Rank 0] Total MPI processes: {size}")
-        print(f"[Rank 0] Master process using device: {device}")
-
-    # Enable benchmark mode for CuDNN (faster if input shapes are consistent)
-    torch.backends.cudnn.benchmark = True
-    torch.backends.cudnn.deterministic = False
-    torch.set_default_dtype(torch.float32)
-    
     # ────────────── Generate Experiment Name Based on Sweeps ──────────────
     sweep_names = list(config["sweeps"].keys())
     experiment_name = f"{'_'.join(sweep_names)}_exp_{datetime.now().strftime('%Y%m%d')}"
@@ -425,11 +452,11 @@ def main():
     full_results_dir = os.path.join(base_results_dir, experiment_name)
     if rank == 0:
         os.makedirs(full_results_dir, exist_ok=True)
-    comm.Barrier()  # Ensure directory exists for all processes.
-
+    dist.barrier()  # Ensure directory exists for all processes
+    
     # ────────────── Set up Checkpointing ──────────────
     if restart_checkpoint is not None:
-        # Use the provided checkpoint file directly.
+        # Use the provided checkpoint file directly
         checkpoint_log_path = restart_checkpoint
         with open(checkpoint_log_path, "r") as f:
             completed_configs = set(line.strip() for line in f if line.strip())
@@ -448,7 +475,7 @@ def main():
                 completed_configs = set(line.strip() for line in f if line.strip())
         else:
             completed_configs = set()
-
+    
     # Save hyperparameters for a new run
     if restart_checkpoint is None and rank == 0:
         hyperparams_path = os.path.join(full_results_dir, f"hyperparameters_{timestamp}.yaml")
@@ -458,31 +485,31 @@ def main():
     # ────────────── Generate and Distribute Work ──────────────
     all_combinations = generate_all_combinations(config)
     
-    # Each MPI worker processes a subset of configurations (round-robin distribution).
+    # Each worker processes a subset of configurations using DDP distribution
     worker_combinations = [
-        config for idx, config in enumerate(all_combinations) if idx % size == rank
+        config for idx, config in enumerate(all_combinations) if idx % world_size == rank
     ]
     print(f"[Rank {rank}] Total configurations to process: {len(worker_combinations)}")
-
+    
     # A cache for GPU datasets
     dataset_cache = {}
-
-    # File for partial results for this worker.
+    
+    # File for partial results for this worker
     results_file_path = os.path.join(full_results_dir, f"results_{timestamp}_rank{rank}.jsonl")
     # Only remove the results file if starting a fresh run (not a restart)
     if restart_checkpoint is None and os.path.exists(results_file_path):
         os.remove(results_file_path)
     worker_results = []
-
+    
     # ────────────── Process Each Hyperparameter Configuration ──────────────
     for config in worker_combinations:
-        # Generate a unique identifier for this configuration.
+        # Generate a unique identifier for this configuration
         unique_id = generate_unique_id(config)
         
         if unique_id in completed_configs:
             print(f"[Rank {rank}] Skipping completed configuration: {unique_id}")
             continue
-
+        
         ds_path = config['ds_path']
         ds_name = config['ds_name']
         mode = config['mode']
@@ -490,7 +517,7 @@ def main():
         d = config['input_dim']
         gamma = config.get('gamma', 1.0)
         base_width = config.get('base_width', 10)
-
+        
         # Load dataset to GPU directly
         if ds_path not in dataset_cache:
             print(f"[Rank {rank}] Loading dataset '{ds_name}' from {ds_path}")
@@ -498,8 +525,6 @@ def main():
                 # Load the dataset directly to GPU
                 data = load_dataset_with_cache(ds_path, rank, device)
                 
-               
-
                 if isinstance(data, dict) and 'X' in data and 'y' in data:
                     X_full = data['X']  # Already on GPU
                     y_full = data['y']  # Already on GPU
@@ -507,8 +532,8 @@ def main():
                 else:
                     print(f"[Rank {rank}] WARNING: Unknown dataset format in {ds_path}")
                     continue
-
-                # For a reproducible test/train split, use a fixed seed per dataset.
+                
+                # For a reproducible test/train split, use a fixed seed per dataset
                 fixed_seed = abs(hash(ds_path)) % (2**32)
                 generator = torch.Generator(device=device)
                 generator.manual_seed(fixed_seed)
@@ -540,7 +565,7 @@ def main():
             y_test = dataset_cache[ds_path]['y_test']
             X_train_master = dataset_cache[ds_path]['X_train_master']
             y_train_master = dataset_cache[ds_path]['y_train_master']
-
+        
         # ───── Sample a Training Subset for This Configuration ─────
         sample_seed = hash(f"sample_{config['n_train']}_{ds_name}_{exp_num}")
         torch.manual_seed(sample_seed)
@@ -555,7 +580,7 @@ def main():
             # Use all available training data if requested size exceeds available data
             X_train = X_train_master
             y_train = y_train_master
-
+        
         # Optional normalization (staying on GPU)
         if normalize_data:
             X_mean = X_train.mean(dim=0)
@@ -569,7 +594,7 @@ def main():
         else:
             X_train_norm, X_test_norm = X_train, X_test
             y_train_norm, y_test_norm = y_train, y_test
-
+        
         # Optional label shuffling (if specified in config)
         shuffled = base_cfg.get("shuffled", False)
         if shuffled:
@@ -578,8 +603,8 @@ def main():
             y_train_norm = shuffle_labels(y_train_norm, seed=shuffle_seed)
             config['shuffled'] = True
             config['shuffle_seed'] = shuffle_seed
-
-        # Create a prefix for naming files.
+        
+        # Create a prefix for naming files
         align_tag = "_align" if config['alignment'] else ""
         model_prefix = (
             f"{ds_name}_h{config['hidden_size']}_d{config['depth']}_n{config['n_train']}"
@@ -587,7 +612,7 @@ def main():
         )
         if shuffled:
             model_prefix += "_shuffled"
-
+        
         # ───── Model Initialization ─────
         # Always initialize a fresh model with input_dim from dataset
         model_seed = hash(f"model_{ds_name}_{datetime.now()}_{rank}_{exp_num}")
@@ -602,6 +627,9 @@ def main():
                       alignment=config['alignment'],
                       base_width=base_width,
                       gamma=gamma).to(device)
+        
+        # Wrap model in DDP - this is the key change for performance
+        model = DDP(model, device_ids=[rank])
         
         # Apply torch.compile if available (PyTorch 2.0+)
         if hasattr(torch, 'compile') and device.type == 'cuda':
@@ -620,27 +648,28 @@ def main():
                 print(f"[Rank {rank}] Using basic compilation: {str(e)}")
             
             print(f"[Rank {rank}] Model initialized with seed: {model_seed}")
-
+        
         if save_model_flag:
             exp_results_dir = os.path.join(full_results_dir, f"experiment{exp_num}")
             os.makedirs(exp_results_dir, exist_ok=True)
             initial_model_path = os.path.join(exp_results_dir, f"initial_model_{model_prefix}_{timestamp}_rank{rank}.pt")
-            save_model(model, initial_model_path)
-
-            # Save the training dataset that the model is trained on.
+            # Save the unwrapped model to be compatible with existing code
+            save_model(model.module if isinstance(model, DDP) else model, initial_model_path)
+            
+            # Save the training dataset that the model is trained on
             dataset_save_path = os.path.join(exp_results_dir, f"dataset_{model_prefix}_{timestamp}_rank{rank}.pt")
             save_dataset(X_train, y_train, dataset_save_path, rank)
-
+        
         local_checkpoint_epochs = checkpoint_epochs if save_model_flag else []
-
-        # Set dynamic batch size based on dataset size
+        
+        # Set dynamic batch size based on dataset size and H100 capabilities
         if config['n_train'] < 1000:
             actual_batch_size = min(batch_size, config['n_train'])
         elif config['n_train'] < 10000:
-            actual_batch_size = min(2048, config['n_train'])
+            actual_batch_size = min(4096, config['n_train'])  # Doubled for H100
         else:
-            actual_batch_size = min(16384, config['n_train'])
-            
+            actual_batch_size = min(32768, config['n_train'])  # Doubled for H100
+        
         # Calculate dynamic evaluation interval based on dataset size and epochs
         dynamic_eval_interval = max(10, min(100, epochs // 30))
         
@@ -649,6 +678,14 @@ def main():
             # Adjust early stop threshold based on dataset size
             early_stop_threshold = 1e-6 if config['n_train'] < 1000 else 1e-4
             
+            # Create optimized dataloaders for DDP
+            train_loader, test_loader, train_sampler = create_dataloaders(
+                X_train_norm, y_train_norm, X_test_norm, y_test_norm, 
+                actual_batch_size, world_size, rank
+            )
+            
+            # Call the original train_and_evaluate function, passing DDP-specific items
+            # Note: To keep original logic, we don't modify train_and_evaluate substantially
             test_error, initial_train_error, final_train_error, error_history, checkpoint_models = train_and_evaluate(
                 model, X_train_norm, y_train_norm, X_test_norm, y_test_norm,
                 actual_batch_size, epochs, local_checkpoint_epochs, config['lr'],
@@ -667,15 +704,16 @@ def main():
         except Exception as e:
             print(f"[Rank {rank}] ERROR during training for config {unique_id}: {str(e)}")
             continue
-
+        
         if save_model_flag:
             exp_results_dir = os.path.join(full_results_dir, f"experiment{exp_num}")
             os.makedirs(exp_results_dir, exist_ok=True)
             final_model_path = os.path.join(
                 exp_results_dir, f"final_model_{model_prefix}_{timestamp}_rank{rank}.pt"
             )
-            save_model(model, final_model_path)
-
+            # Save the unwrapped model to be compatible with existing code
+            save_model(model.module if isinstance(model, DDP) else model, final_model_path)
+        
         # ───── Record Results ─────
         result = {
             'dataset_name': ds_name,
@@ -704,28 +742,31 @@ def main():
             'sweep_name': config['sweep_name']
         }
         worker_results.append(result)
-
-        # Append new results in append mode.
+        
+        # Append new results in append mode
         with open(results_file_path, "a") as f:
             f.write(json.dumps(result) + "\n")
             f.flush()
             os.fsync(f.fileno())
-
-        # Append the unique configuration identifier to the shared checkpoint log.
+        
+        # Append the unique configuration identifier to the shared checkpoint log
         with open(checkpoint_log_path, "a") as cp_f:
             cp_f.write(unique_id + "\n")
         completed_configs.add(unique_id)
-
+        
         print(f"[Rank {rank}] Completed configuration: {unique_id}")
         
         # Clear some memory if possible
         if device.type == 'cuda':
             torch.cuda.empty_cache()
-
-    # Save final aggregated results for this worker.
+    
+    # Save final aggregated results for this worker
     with open(os.path.join(full_results_dir, f"final_results_{timestamp}_rank{rank}.json"), "w") as f:
         json.dump(worker_results, f, indent=4)
     print(f"[Rank {rank}] Finished processing. Results saved to {results_file_path}")
+    
+    # Clean up DDP resources
+    cleanup_ddp()
 
 if __name__ == "__main__":
     main()

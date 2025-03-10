@@ -533,7 +533,7 @@ def main():
     distributions = ['normal'] #'uniform', 'spiked_normal'
     
     # Set a single spectrum type (choose one of: 'polynomial', 'exponential', 'linear')
-    spectrum_type = 'exponential'
+    spectrum_type = 'polynomial'
     
     # Dimensions to explore
     dimensions = [16]  
@@ -551,7 +551,7 @@ def main():
     num_experiments = 3  # Number of experiments to run with different random seeds
     
     # Hidden layer sizes to explore
-    hidden_sizes = [4,8,16,32,64] # 8 # Multiple hidden sizes to explore
+    hidden_sizes = [2, 4,8,16,32,64,128] # 8 # Multiple hidden sizes to explore # 4,8,16,32,64
     
     # Calculate total number of combinations including hidden_sizes and experiment numbers
     total_combinations = []
@@ -578,15 +578,15 @@ def main():
     
     # Common hyperparameters
     depth = 2                   # Total network depth.
-    train_size = 300000         # Number of training samples.
+    train_size = 800000         # Number of training samples.
     mode = 'standard_lr'        # Network mode.
     use_log = True             # Use logarithmic eigenvalue loss.
     epochs = 12000              # Training epochs.
     lr = 8e-4                   # Learning rate.
-    top_k =10                  # Number of top eigenvalues to match.
-    lambda_top = 10.0           # Adjusted top-k loss weight.
+    top_k =5                  # Number of top eigenvalues to match.
+    lambda_top = 20.0           # Adjusted top-k loss weight.
     lambda_eig = 50.0           # Adjusted eigenvalue loss weight.
-    rank_preservation_weight = 1.0 #0.01  
+    rank_preservation_weight = 0.1 #0.01  
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     if rank == 0:
@@ -693,7 +693,7 @@ def main():
         else:
             smart_name = f"{dist_abbr}{spec_abbr}_d{d}_H{hidden_size}_D{depth}_a{alpha:.1f}_{'O' if orthogonal else 'NO'}_{exp_num}"
         
-        save_dir = os.path.join("/home/goring/TF_spectrum/pretrain/biggrid_0403_exp/",
+        save_dir = os.path.join("/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/",
                                 f"PT_{smart_name}_{timestamp}")
         os.makedirs(save_dir, exist_ok=True)
         

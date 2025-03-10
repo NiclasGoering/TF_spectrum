@@ -1,0 +1,132 @@
+# Base configuration that contains common settings
+base_config:
+  base_results_dir: "/home/goring/TF_spectrum/results/lg_grid_0903"
+  epochs: 5000
+  batch_size: 32768 
+  checkpoint_epochs: []
+  weight_decay: 0
+  n_test: 20000
+  save_model: false
+  normalize_data: false
+  num_experiments: 1
+  restart_checkpoint: null  #null
+
+# Sweeps with their specific dataset paths
+sweeps:
+  # Learning rate sweep for first dataset group
+  sweep_full:
+    dataset_paths:
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H2_D2_a0.0_O_1_20250310_002458"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H2_D2_a0.0_O_2_20250310_002719"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H2_D2_a0.0_O_3_20250310_002941"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H2_D2_a0.5_O_1_20250310_003422"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H2_D2_a0.5_O_2_20250310_003856"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H2_D2_a0.5_O_3_20250310_004509"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H2_D2_a1.0_O_1_20250310_011443"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H2_D2_a1.0_O_2_20250310_011802"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H2_D2_a1.0_O_3_20250310_012108"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H2_D2_a4.0_O_1_20250310_004134"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H2_D2_a4.0_O_2_20250310_004749"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H2_D2_a4.0_O_3_20250310_005415"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H2_D2_a8.0_O_1_20250310_011408"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H2_D2_a8.0_O_2_20250310_011731"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H2_D2_a8.0_O_3_20250310_012041"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H4_D2_a0.0_O_1_20250309_175340"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H4_D2_a0.0_O_2_20250309_175536"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H4_D2_a0.0_O_3_20250309_175731"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H4_D2_a0.5_O_1_20250309_180933"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H4_D2_a0.5_O_2_20250309_181123"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H4_D2_a0.5_O_3_20250309_181316"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H4_D2_a1.0_O_1_20250309_183001"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H4_D2_a1.0_O_2_20250309_183114"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H4_D2_a1.0_O_3_20250309_183218"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H4_D2_a4.0_O_1_20250310_010043"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H4_D2_a4.0_O_2_20250310_004134"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H4_D2_a4.0_O_3_20250310_004749"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H4_D2_a8.0_O_1_20250310_004134"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H4_D2_a8.0_O_2_20250310_004749"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H4_D2_a8.0_O_3_20250310_005416"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H8_D2_a0.0_O_1_20250309_175916"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H8_D2_a0.0_O_2_20250309_180105"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H8_D2_a0.0_O_3_20250309_180252"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H8_D2_a0.5_O_1_20250309_181509"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H8_D2_a0.5_O_2_20250309_181700"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H8_D2_a0.5_O_3_20250309_181859"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H8_D2_a1.0_O_1_20250309_183259"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H8_D2_a1.0_O_2_20250309_183339"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H8_D2_a1.0_O_3_20250309_183421"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H8_D2_a4.0_O_1_20250310_005415"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H8_D2_a4.0_O_2_20250310_010044"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H8_D2_a4.0_O_3_20250310_004134"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H8_D2_a8.0_O_1_20250310_010044"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H8_D2_a8.0_O_2_20250310_004134"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H8_D2_a8.0_O_3_20250310_004749"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H16_D2_a0.0_O_1_20250309_180443"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H16_D2_a0.0_O_2_20250309_180633"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H16_D2_a0.0_O_3_20250309_180819"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H16_D2_a0.5_O_1_20250309_182100"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H16_D2_a0.5_O_2_20250309_182245"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H16_D2_a0.5_O_3_20250309_182430"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H16_D2_a1.0_O_1_20250309_175340"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H16_D2_a1.0_O_2_20250309_175536"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H16_D2_a1.0_O_3_20250309_175731"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H16_D2_a4.0_O_1_20250310_004749"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H16_D2_a4.0_O_2_20250310_005416"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H16_D2_a4.0_O_3_20250310_010044"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H16_D2_a8.0_O_1_20250310_005416"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H16_D2_a8.0_O_2_20250310_010044"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H16_D2_a8.0_O_3_20250310_004134"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H32_D2_a0.0_O_1_20250309_181216"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H32_D2_a0.0_O_2_20250309_181626"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H32_D2_a0.0_O_3_20250309_182056"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H32_D2_a0.5_O_1_20250309_175831"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H32_D2_a0.5_O_2_20250309_180449"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H32_D2_a0.5_O_3_20250309_181058"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H32_D2_a1.0_O_1_20250309_180414"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H32_D2_a1.0_O_2_20250309_181055"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H32_D2_a1.0_O_3_20250309_181712"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H32_D2_a4.0_O_1_20250310_010412"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H32_D2_a4.0_O_2_20250310_012135"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H32_D2_a4.0_O_3_20250310_012906"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H32_D2_a8.0_O_1_20250310_010054"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H32_D2_a8.0_O_2_20250310_011317"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H32_D2_a8.0_O_3_20250310_012214"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H64_D2_a0.0_O_1_20250309_175724"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H64_D2_a0.0_O_2_20250309_180229"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H64_D2_a0.0_O_3_20250309_180747"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H64_D2_a0.5_O_1_20250309_181809"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H64_D2_a0.5_O_2_20250309_182444"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H64_D2_a0.5_O_3_20250309_182848"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H64_D2_a1.0_O_1_20250309_182405"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H64_D2_a1.0_O_2_20250309_182817"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H64_D2_a1.0_O_3_20250309_183204"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H64_D2_a4.0_O_1_20250310_013515"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H64_D2_a4.0_O_2_20250310_010617"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H64_D2_a4.0_O_3_20250310_012309"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H64_D2_a8.0_O_1_20250310_010046"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H64_D2_a8.0_O_2_20250310_011626"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H64_D2_a8.0_O_3_20250310_012534"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H128_D2_a0.0_O_1_20250310_004618"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H128_D2_a0.0_O_2_20250310_011019"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H128_D2_a0.0_O_3_20250310_003215"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H128_D2_a0.5_O_1_20250310_011556"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H128_D2_a0.5_O_2_20250310_003628"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H128_D2_a0.5_O_3_20250310_011106"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H128_D2_a1.0_O_1_20250310_003636"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H128_D2_a1.0_O_2_20250310_011213"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H128_D2_a1.0_O_3_20250310_012646"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H128_D2_a4.0_O_1_20250310_013213"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H128_D2_a4.0_O_2_20250310_013631"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H128_D2_a4.0_O_3_20250310_011027"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H128_D2_a8.0_O_1_20250310_013239"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H128_D2_a8.0_O_2_20250310_010436"
+      - "/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/PT_NP_d16_H128_D2_a8.0_O_3_20250310_012201"
+    parameters:
+      hidden_sizes: [256]  # Width parameter
+      depths: [2]  # Depth parameter
+      base_width: 256   # Base width parameter
+      learning_rates: [0.0005,0.0001,0.00005,0.001]
+      n_train: [10,100,1000,10000,50000,100000,200000,300000,500000]
+      modes: ["standard_lr"]
+      alignment: [False]
+  
