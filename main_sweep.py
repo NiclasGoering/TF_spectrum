@@ -3,7 +3,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from typing import List, Dict, Tuple, Any
+from typing import List, Dict, Tuple, Any, Optional
 import random
 from functools import partial
 import json
@@ -14,27 +14,20 @@ import sys
 import glob
 from mpi4py import MPI
 import hashlib
+import threading
+import queue
 from torch.utils.data import TensorDataset, DataLoader
 
-# Import your model and helper functions.
+# Import your model and helper functions
 from FFNN import DeepNN
 from utils2 import save_dataset, save_results, save_model
 from train2 import train_and_evaluate, shuffle_labels
-# In both files, add:
 from utils2 import GPUTensorDataset
 
-# Optimize CUDA settings
-torch.cuda.empty_cache()
-torch.backends.cuda.matmul.allow_tf32 = True  # Enable TF32 on Ampere+ GPUs
+# Ensure prints flush immediately
+print = partial(print, flush=True)
 
-# Optimize memory allocation
-if torch.cuda.is_available():
-    # Reduce memory fragmentation
-    torch.cuda.empty_cache()
-    torch.backends.cudnn.benchmark = True
-    torch.backends.cudnn.deterministic = False  # Faster at the cost of reproducibility
-
-# GPU dataset that stays on the device
+# Enhanced GPU dataset that stays on the device
 class GPUTensorDataset(torch.utils.data.Dataset):
     def __init__(self, *tensors):
         self.tensors = tensors
@@ -45,16 +38,79 @@ class GPUTensorDataset(torch.utils.data.Dataset):
     def __len__(self):
         return self.tensors[0].size(0)
 
-# Ensure prints flush immediately
-print = partial(print, flush=True)
+# Dataset prefetcher for asynchronous loading
+class DatasetPrefetcher:
+    def __init__(self, max_size=3):
+        self.queue = queue.Queue(maxsize=max_size)
+        self.active_threads = 0
+        self.lock = threading.Lock()
+        
+    def fetch_dataset(self, ds_path, rank, device):
+        """Prefetch a dataset in a background thread"""
+        try:
+            data = torch.load(ds_path, map_location='cpu')
+            
+            # Move data to GPU right after loading
+            if isinstance(data, dict) and 'X' in data and 'y' in data:
+                data['X'] = data['X'].to(device, non_blocking=True)
+                data['y'] = data['y'].to(device, non_blocking=True)
+            
+            # Add to queue
+            self.queue.put((ds_path, data))
+            
+            with self.lock:
+                self.active_threads -= 1
+                
+        except Exception as e:
+            print(f"[Rank {rank}] Error prefetching dataset {ds_path}: {e}")
+            # Put None to indicate error
+            self.queue.put((ds_path, None))
+            
+            with self.lock:
+                self.active_threads -= 1
+    
+    def start_prefetch(self, ds_path, rank, device):
+        """Start prefetching a dataset in background"""
+        with self.lock:
+            self.active_threads += 1
+            
+        thread = threading.Thread(
+            target=self.fetch_dataset,
+            args=(ds_path, rank, device),
+            daemon=True
+        )
+        thread.start()
+        
+    def get_dataset(self, ds_path, rank, device):
+        """Get a prefetched dataset or load it directly if not available"""
+        # Try to get from queue first
+        try:
+            for _ in range(self.queue.qsize()):
+                path, data = self.queue.get(block=False)
+                if path == ds_path:
+                    return data
+                else:
+                    # Put it back for later use
+                    self.queue.put((path, data))
+        except queue.Empty:
+            pass
+            
+        # If not found in queue, load directly
+        print(f"[Rank {rank}] Loading dataset {ds_path} directly (not prefetched)")
+        return load_dataset_with_cache(ds_path, rank, device)
+    
+    def clear(self):
+        """Clear the queue"""
+        try:
+            while True:
+                self.queue.get(block=False)
+        except queue.Empty:
+            pass
 
 def load_yaml_config(config_path):
     """Load and return the configuration from a YAML file."""
     with open(config_path, 'r') as f:
         return yaml.safe_load(f)
-
-
-import os
 
 def extract_info_from_path(path):
     """
@@ -69,16 +125,15 @@ def extract_info_from_path(path):
     dist_type = None
 
     # 1) Set distribution_type from top-level folder
-    if 'biggrid_0403_poly' in path_lower:
+    if 'biggrid_0403_poly' in path_lower or 'lrgrid_0903_poly' in path_lower:
         dist_type = "NP"
-    elif 'biggrid_0403_lin' in path_lower:
+    elif 'biggrid_0403_lin' in path_lower or 'lrgrid_0903_lin' in path_lower:
         dist_type = "NL"
-    elif 'biggrid_0403_exp' in path_lower:
+    elif 'biggrid_0403_exp' in path_lower or 'lrgrid_0903_exp' in path_lower:
         dist_type = "NE"
     else:
         # If somehow not in poly/lin/exp, default to NP or raise an error.
         dist_type = "NP"
-        # or raise ValueError(f"Cannot determine distribution from path: {path}")
 
     # 2) Parse dimension tokens from the final folder name
     basename = os.path.basename(path)
@@ -120,8 +175,6 @@ def extract_info_from_path(path):
     
     return info
 
-
-
 def find_files_in_directory(directory, pattern):
     """Find files matching a pattern in a directory."""
     return glob.glob(os.path.join(directory, pattern))
@@ -136,12 +189,6 @@ def load_result_json(directory):
         except Exception as e:
             print(f"Error loading {result_files[0]}: {e}")
     return None
-
-
-
-import os
-import glob
-import json
 
 def load_dataset_info(directory):
     """
@@ -221,19 +268,18 @@ def load_dataset_info(directory):
     else:
         ds_name = os.path.basename(dataset_path).replace("dataset_", "").replace(".pt", "")
 
-    print(f"[load_dataset_info] {directory} => {ds_name}, type={dist_type}, depth={depth}, alpha={alpha}")
+    # Also include dataset size estimate
+    file_size_mb = os.path.getsize(dataset_path) / (1024 * 1024)
+    
+    print(f"[load_dataset_info] {directory} => {ds_name}, type={dist_type}, depth={depth}, alpha={alpha}, size={file_size_mb:.1f}MB")
 
     return {
         "path": dataset_path,
         "name": ds_name,
         "params": params,
-        "directory": directory
+        "directory": directory,
+        "size_mb": file_size_mb
     }
-
-
-
-
-
 
 def load_dataset_with_cache(ds_path, rank, device):
     """
@@ -268,23 +314,29 @@ def generate_all_combinations(config):
         sweep_params = sweep_info.get("parameters", {})
         
         # Load dataset information for each path
+        dataset_infos = []
         for ds_path in dataset_paths:
             ds_info = load_dataset_info(ds_path)
             if not ds_info:
                 print(f"Warning: Could not load dataset info from {ds_path}")
                 continue
+            dataset_infos.append(ds_info)
                 
+        # Sort datasets by estimated size for better memory management
+        dataset_infos.sort(key=lambda x: x.get('size_mb', 0))
+        
+        for ds_info in dataset_infos:
             # Extract parameters from the dataset
             ds_params = ds_info['params']
             
             # CRITICAL: Check if input_dim is available
             if 'input_dim' not in ds_params:
-                print(f"Error: No input_dim found in results.json for {ds_path}. This is required.")
+                print(f"Error: No input_dim found in results.json for {ds_info['path']}. This is required.")
                 continue
                 
             # Get the input dimension from the dataset's result.json
             input_dim = ds_params['input_dim']
-            print(f"Using input_dim={input_dim} from dataset {ds_path}")
+            print(f"Using input_dim={input_dim} from dataset {ds_info['path']}")
             
             # For each hyperparameter to sweep
             for n_train in sweep_params.get("n_train", [ds_params.get('train_size', 1024)]):
@@ -316,16 +368,26 @@ def generate_all_combinations(config):
                                             'base_width': sweep_params.get('base_width', 10),
                                             'alignment': alignment,
                                             'sweep_name': sweep_name,
-                                            'alpha': ds_params.get('alpha', 1.0)
+                                            'alpha': ds_params.get('alpha', 1.0),
+                                            'size_mb': ds_info.get('size_mb', 0),
+                                            'size_class': get_size_class(n_train)
                                         })
-    
-    # Sort by n_train to process smaller datasets first
-    all_combinations.sort(key=lambda c: c['n_train'])
     
     return all_combinations
 
+def get_size_class(n_train):
+    """Classify dataset size to optimize workload distribution"""
+    if n_train < 1000:
+        return "tiny"
+    elif n_train < 10000:
+        return "small"  
+    elif n_train < 100000:
+        return "medium"
+    else:
+        return "large"
 
 def generate_unique_id(config):
+    """Generate a unique identifier for this configuration."""
     import os
     
     ds_name = config['ds_name']  # e.g. "NP_d16_H4_a0.0"
@@ -355,7 +417,55 @@ def generate_unique_id(config):
     
     return unique_id
 
-
+def optimize_work_distribution(all_combinations, size, rank):
+    """
+    Optimize work distribution to maximize GPU utilization.
+    Process larger datasets first, then distribute smaller ones.
+    Group by dataset size for better memory management.
+    """
+    # Group combinations by size class
+    size_groups = {
+        "large": [],   # >= 100,000
+        "medium": [],  # 10,000 - 99,999
+        "small": [],   # 1,000 - 9,999
+        "tiny": []     # < 1,000
+    }
+    
+    for config in all_combinations:
+        size_groups[config['size_class']].append(config)
+    
+    # Process from large to tiny for maximum GPU utilization
+    # (Large datasets better utilize GPU compute capacity)
+    ordered_combinations = []
+    
+    # Start with large and medium datasets evenly distributed
+    # This ensures workers get a mix of workloads
+    large_and_medium = size_groups["large"] + size_groups["medium"]
+    if large_and_medium:
+        # Sort by n_train in descending order - largest first
+        large_and_medium.sort(key=lambda c: c['n_train'], reverse=True)
+        
+        # Round-robin assignment by remainder with size
+        worker_large_medium = [c for i, c in enumerate(large_and_medium) if i % size == rank]
+        ordered_combinations.extend(worker_large_medium)
+    
+    # Then add small and tiny datasets evenly distributed
+    small_and_tiny = size_groups["small"] + size_groups["tiny"]
+    if small_and_tiny:
+        # Sort by n_train in descending order within each group
+        small_and_tiny.sort(key=lambda c: c['n_train'], reverse=True)
+        
+        # Round-robin assignment by remainder with size
+        worker_small_tiny = [c for i, c in enumerate(small_and_tiny) if i % size == rank]
+        ordered_combinations.extend(worker_small_tiny)
+    
+    print(f"[Rank {rank}] Optimized workload: {len(ordered_combinations)} combinations")
+    print(f"[Rank {rank}] Distribution: Large={len([c for c in ordered_combinations if c['size_class'] == 'large'])}, "
+          f"Medium={len([c for c in ordered_combinations if c['size_class'] == 'medium'])}, "
+          f"Small={len([c for c in ordered_combinations if c['size_class'] == 'small'])}, "
+          f"Tiny={len([c for c in ordered_combinations if c['size_class'] == 'tiny'])}")
+    
+    return ordered_combinations
 
 def main():
     if len(sys.argv) < 2:
@@ -390,8 +500,9 @@ def main():
     if torch.cuda.is_available():
         # Calculate workers per GPU and adjust memory fraction
         if num_gpus > 0:
-            workers_per_gpu = size // num_gpus
-            mem_fraction = 0.95 / workers_per_gpu  # Scale down for more workers
+            workers_per_gpu = max(1, size // num_gpus)
+            # More aggressive memory usage - H100s have plenty of memory
+            mem_fraction = min(0.98, 0.98 / workers_per_gpu)
             torch.cuda.memory.set_per_process_memory_fraction(mem_fraction)
         
         torch.cuda.empty_cache()
@@ -399,7 +510,7 @@ def main():
         torch.backends.cuda.enable_mem_efficient_sdp = True  # H100-specific
         torch.backends.cudnn.benchmark = True
         
-        # GPU assignment
+        # GPU assignment - distribute evenly
         gpu_id = rank % num_gpus
         torch.cuda.set_device(gpu_id)  # Set before any tensor operations
         device = torch.device(f'cuda:{gpu_id}')
@@ -412,9 +523,11 @@ def main():
         print(f"[Rank 0] Total MPI processes: {size}")
         print(f"[Rank 0] Master process using device: {device}")
 
-    # Enable benchmark mode for CuDNN (faster if input shapes are consistent)
-    torch.backends.cudnn.benchmark = True
-    torch.backends.cudnn.deterministic = False
+    # Enable benchmark mode for CuDNN and set precision
+    if torch.cuda.is_available():
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cudnn.deterministic = False
+        torch.set_float32_matmul_precision('high')
     torch.set_default_dtype(torch.float32)
     
     # ────────────── Generate Experiment Name Based on Sweeps ──────────────
@@ -455,19 +568,29 @@ def main():
         with open(hyperparams_path, "w") as f:
             yaml.dump(config, f, default_flow_style=False)
     
-    # ────────────── Generate and Distribute Work ──────────────
+    # ────────────── Generate and Optimize Work Distribution ──────────────
     all_combinations = generate_all_combinations(config)
     
-    # Each MPI worker processes a subset of configurations (round-robin distribution).
-    worker_combinations = [
-        config for idx, config in enumerate(all_combinations) if idx % size == rank
-    ]
+    # Improved work distribution - optimize for large jobs first
+    worker_combinations = optimize_work_distribution(all_combinations, size, rank)
+    
     print(f"[Rank {rank}] Total configurations to process: {len(worker_combinations)}")
 
-    # A cache for GPU datasets
-    dataset_cache = {}
-
-    # File for partial results for this worker.
+    # Initialize dataset prefetcher for asynchronous loading
+    prefetcher = DatasetPrefetcher(max_size=3)
+    
+    # Track unique datasets to avoid reloading
+    unique_datasets = {config['ds_path'] for config in worker_combinations}
+    
+    # Start prefetching the first few datasets
+    prefetch_count = 0
+    for ds_path in unique_datasets:
+        if prefetch_count < 2:  # Limit initial prefetching to avoid OOM
+            prefetcher.start_prefetch(ds_path, rank, device)
+            prefetch_count += 1
+            print(f"[Rank {rank}] Started prefetching dataset: {ds_path}")
+    
+    # File for partial results for this worker
     results_file_path = os.path.join(full_results_dir, f"results_{timestamp}_rank{rank}.jsonl")
     # Only remove the results file if starting a fresh run (not a restart)
     if restart_checkpoint is None and os.path.exists(results_file_path):
@@ -475,8 +598,23 @@ def main():
     worker_results = []
 
     # ────────────── Process Each Hyperparameter Configuration ──────────────
-    for config in worker_combinations:
-        # Generate a unique identifier for this configuration.
+    previous_ds_path = None
+    dataset_cache = {}
+    
+    for i, config in enumerate(worker_combinations):
+        # Prefetch next dataset if available
+        if i < len(worker_combinations) - 1:
+            next_config = worker_combinations[i+1]
+            next_ds_path = next_config['ds_path']
+            
+            # Only prefetch if it's a different dataset and not already prefetching/prefetched
+            if (next_ds_path != config['ds_path'] and 
+                next_ds_path not in dataset_cache and
+                prefetcher.active_threads < 1):
+                prefetcher.start_prefetch(next_ds_path, rank, device)
+                print(f"[Rank {rank}] Started prefetching next dataset: {next_ds_path}")
+        
+        # Generate a unique identifier for this configuration
         unique_id = generate_unique_id(config)
         
         if unique_id in completed_configs:
@@ -491,55 +629,79 @@ def main():
         gamma = config.get('gamma', 1.0)
         base_width = config.get('base_width', 10)
 
-        # Load dataset to GPU directly
+        # Load dataset - try prefetched version first, then direct load
         if ds_path not in dataset_cache:
-            print(f"[Rank {rank}] Loading dataset '{ds_name}' from {ds_path}")
-            try:
-                # Load the dataset directly to GPU
-                data = load_dataset_with_cache(ds_path, rank, device)
+            # Check if this is a new dataset that needs loading
+            if previous_ds_path != ds_path:
+                # Clear previous dataset from cache if memory might be tight
+                if previous_ds_path is not None and config['size_class'] in ['large', 'medium']:
+                    # Only clear large datasets that are no longer needed
+                    if previous_ds_path in dataset_cache:
+                        print(f"[Rank {rank}] Clearing previous large dataset from cache: {previous_ds_path}")
+                        del dataset_cache[previous_ds_path]
+                        # Force CUDA cache cleanup
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
                 
-               
-
-                if isinstance(data, dict) and 'X' in data and 'y' in data:
-                    X_full = data['X']  # Already on GPU
-                    y_full = data['y']  # Already on GPU
-                    print(f"[Rank {rank}] Dataset loaded: X shape: {X_full.shape}, y shape: {y_full.shape}")
+                # Try to get from prefetcher first, then load directly if not available
+                data = prefetcher.get_dataset(ds_path, rank, device)
+                
+                if data is not None:
+                    if isinstance(data, dict) and 'X' in data and 'y' in data:
+                        X_full = data['X']
+                        y_full = data['y']
+                        print(f"[Rank {rank}] Dataset loaded: X shape: {X_full.shape}, y shape: {y_full.shape}")
+                    else:
+                        print(f"[Rank {rank}] WARNING: Unknown dataset format in {ds_path}")
+                        continue
+                        
+                    # For a reproducible test/train split, use a fixed seed per dataset
+                    fixed_seed = abs(hash(ds_path)) % (2**32)
+                    generator = torch.Generator(device=device)
+                    generator.manual_seed(fixed_seed)
+                    
+                    # Create indices on GPU
+                    indices = torch.randperm(len(X_full), device=device, generator=generator)
+                    test_indices = indices[:n_test]
+                    train_master_indices = indices[n_test:]
+                    
+                    # Keep everything on GPU
+                    X_test = X_full[test_indices]
+                    y_test = y_full[test_indices]
+                    X_train_master = X_full[train_master_indices]
+                    y_train_master = y_full[train_master_indices]
+                    
+                    # Store in GPU cache - only keep if small enough
+                    if config['size_class'] not in ['large'] or len(worker_combinations) <= 3:
+                        dataset_cache[ds_path] = {
+                            'X_test': X_test,
+                            'y_test': y_test,
+                            'X_train_master': X_train_master,
+                            'y_train_master': y_train_master
+                        }
+                        print(f"[Rank {rank}] Dataset '{ds_name}' cached on GPU")
+                    else:
+                        # For large datasets with many experiments, create a temporary reference
+                        # that will be cleared after this iteration
+                        dataset_cache[ds_path] = {
+                            'X_test': X_test,
+                            'y_test': y_test,
+                            'X_train_master': X_train_master,
+                            'y_train_master': y_train_master,
+                            'temporary': True
+                        }
+                        print(f"[Rank {rank}] Large dataset '{ds_name}' temporarily cached")
                 else:
-                    print(f"[Rank {rank}] WARNING: Unknown dataset format in {ds_path}")
+                    print(f"[Rank {rank}] ERROR: Failed to load dataset {ds_path}")
                     continue
-
-                # For a reproducible test/train split, use a fixed seed per dataset.
-                fixed_seed = abs(hash(ds_path)) % (2**32)
-                generator = torch.Generator(device=device)
-                generator.manual_seed(fixed_seed)
-                
-                # Create indices on GPU
-                indices = torch.randperm(len(X_full), device=device, generator=generator)
-                test_indices = indices[:n_test]
-                train_master_indices = indices[n_test:]
-                
-                # Keep everything on GPU
-                X_test = X_full[test_indices]
-                y_test = y_full[test_indices]
-                X_train_master = X_full[train_master_indices]
-                y_train_master = y_full[train_master_indices]
-                
-                # Store in GPU cache
-                dataset_cache[ds_path] = {
-                    'X_test': X_test,
-                    'y_test': y_test,
-                    'X_train_master': X_train_master,
-                    'y_train_master': y_train_master
-                }
-                print(f"[Rank {rank}] Dataset '{ds_name}' loaded and cached on GPU.")
-            except Exception as e:
-                print(f"[Rank {rank}] ERROR loading dataset '{ds_name}': {str(e)}")
-                continue
-        else:
-            X_test = dataset_cache[ds_path]['X_test']
-            y_test = dataset_cache[ds_path]['y_test']
-            X_train_master = dataset_cache[ds_path]['X_train_master']
-            y_train_master = dataset_cache[ds_path]['y_train_master']
+                    
+                previous_ds_path = ds_path
+        
+        # Get dataset from cache
+        X_test = dataset_cache[ds_path]['X_test']
+        y_test = dataset_cache[ds_path]['y_test']
+        X_train_master = dataset_cache[ds_path]['X_train_master']
+        y_train_master = dataset_cache[ds_path]['y_train_master']
 
         # ───── Sample a Training Subset for This Configuration ─────
         sample_seed = hash(f"sample_{config['n_train']}_{ds_name}_{exp_num}")
@@ -579,7 +741,7 @@ def main():
             config['shuffled'] = True
             config['shuffle_seed'] = shuffle_seed
 
-        # Create a prefix for naming files.
+        # Create a prefix for naming files
         align_tag = "_align" if config['alignment'] else ""
         model_prefix = (
             f"{ds_name}_h{config['hidden_size']}_d{config['depth']}_n{config['n_train']}"
@@ -605,45 +767,33 @@ def main():
         
         # Apply torch.compile if available (PyTorch 2.0+)
         if hasattr(torch, 'compile') and device.type == 'cuda':
-            # Fix compilation issues with dynamic batches
-            torch._dynamo.config.cache_size_limit = 64  # Increase from default 8
             try:
-                # Use only mode parameter, not options
                 model = torch.compile(
                     model,
-                    mode="reduce-overhead"
+                    mode="reduce-overhead",
+                    fullgraph=True  # Enable full graph compilation for better optimization
                 )
                 print(f"[Rank {rank}] Model compiled with optimized settings")
             except Exception as e:
-                # Fall back to basic compilation if advanced options fail
-                model = torch.compile(model)
-                print(f"[Rank {rank}] Using basic compilation: {str(e)}")
-            
-            print(f"[Rank {rank}] Model initialized with seed: {model_seed}")
-
+                try:
+                    # Fall back to basic compilation if advanced options fail
+                    model = torch.compile(model)
+                    print(f"[Rank {rank}] Using basic compilation: {str(e)}")
+                except Exception as e2:
+                    print(f"[Rank {rank}] Compilation failed, using uncompiled model: {str(e2)}")
+        
         if save_model_flag:
             exp_results_dir = os.path.join(full_results_dir, f"experiment{exp_num}")
             os.makedirs(exp_results_dir, exist_ok=True)
             initial_model_path = os.path.join(exp_results_dir, f"initial_model_{model_prefix}_{timestamp}_rank{rank}.pt")
             save_model(model, initial_model_path)
 
-            # Save the training dataset that the model is trained on.
+            # Save the training dataset that the model is trained on
             dataset_save_path = os.path.join(exp_results_dir, f"dataset_{model_prefix}_{timestamp}_rank{rank}.pt")
             save_dataset(X_train, y_train, dataset_save_path, rank)
 
         local_checkpoint_epochs = checkpoint_epochs if save_model_flag else []
 
-        # Set dynamic batch size based on dataset size
-        if config['n_train'] < 1000:
-            actual_batch_size = min(batch_size, config['n_train'])
-        elif config['n_train'] < 10000:
-            actual_batch_size = min(2048, config['n_train'])
-        else:
-            actual_batch_size = min(16384, config['n_train'])
-            
-        # Calculate dynamic evaluation interval based on dataset size and epochs
-        dynamic_eval_interval = max(10, min(100, epochs // 30))
-        
         # ───── Train and Evaluate the Model ─────
         try:
             # Adjust early stop threshold based on dataset size
@@ -651,7 +801,7 @@ def main():
             
             test_error, initial_train_error, final_train_error, error_history, checkpoint_models = train_and_evaluate(
                 model, X_train_norm, y_train_norm, X_test_norm, y_test_norm,
-                actual_batch_size, epochs, local_checkpoint_epochs, config['lr'],
+                batch_size, epochs, local_checkpoint_epochs, config['lr'],
                 weight_decay, mode, 
                 alignment=config['alignment'],
                 results_dir=full_results_dir, 
@@ -660,12 +810,15 @@ def main():
                 experiment_num=exp_num, 
                 model_prefix=model_prefix,
                 base_width=base_width,
-                eval_interval=dynamic_eval_interval,
-                eval_print_interval=dynamic_eval_interval * 3,
+                eval_interval=epochs // 20,  # Less frequent evaluation
+                eval_print_interval=epochs // 10,  # Less frequent printing
                 early_stop_threshold=early_stop_threshold
             )
         except Exception as e:
             print(f"[Rank {rank}] ERROR during training for config {unique_id}: {str(e)}")
+            # Try to clear memory and continue with next experiment
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
             continue
 
         if save_model_flag:
@@ -705,24 +858,29 @@ def main():
         }
         worker_results.append(result)
 
-        # Append new results in append mode.
+        # Append new results in append mode
         with open(results_file_path, "a") as f:
             f.write(json.dumps(result) + "\n")
             f.flush()
             os.fsync(f.fileno())
 
-        # Append the unique configuration identifier to the shared checkpoint log.
+        # Append the unique configuration identifier to the shared checkpoint log
         with open(checkpoint_log_path, "a") as cp_f:
             cp_f.write(unique_id + "\n")
         completed_configs.add(unique_id)
 
         print(f"[Rank {rank}] Completed configuration: {unique_id}")
         
+        # Clean up temporary datasets
+        if ds_path in dataset_cache and dataset_cache[ds_path].get('temporary', False):
+            print(f"[Rank {rank}] Clearing temporary dataset from cache: {ds_path}")
+            del dataset_cache[ds_path]
+        
         # Clear some memory if possible
         if device.type == 'cuda':
             torch.cuda.empty_cache()
 
-    # Save final aggregated results for this worker.
+    # Save final aggregated results for this worker
     with open(os.path.join(full_results_dir, f"final_results_{timestamp}_rank{rank}.json"), "w") as f:
         json.dump(worker_results, f, indent=4)
     print(f"[Rank {rank}] Finished processing. Results saved to {results_file_path}")

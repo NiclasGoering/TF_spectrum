@@ -1,15 +1,15 @@
 # Base configuration that contains common settings
 base_config:
-  base_results_dir: "/home/goring/TF_spectrum/results/lg_grid_0903"
+  base_results_dir: "/home/goring/TF_spectrum/results/lg_grid_1303"
   epochs: 5000
-  batch_size: 32768 
+  batch_size: 65536 
   checkpoint_epochs: []
   weight_decay: 0
   n_test: 20000
   save_model: false
   normalize_data: false
   num_experiments: 1
-  restart_checkpoint: null  #null
+  restart_checkpoint: null
 
 # Sweeps with their specific dataset paths
 sweeps:
@@ -125,8 +125,8 @@ sweeps:
       hidden_sizes: [256]  # Width parameter
       depths: [2]  # Depth parameter
       base_width: 256   # Base width parameter
-      learning_rates: [0.0005,0.0001,0.00005,0.001]
-      n_train: [10,100,1000,10000,50000,100000,200000,300000,500000]
+      learning_rates: [0.001] #0.0005,0.0001,0.00005,
+      n_train: [10,100,1000,10000,50000,100000,200000,300000,500000,750000]
       modes: ["standard_lr"]
       alignment: [False]
   

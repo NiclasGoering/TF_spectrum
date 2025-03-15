@@ -6,6 +6,10 @@ import os
 from datetime import datetime
 import matplotlib.pyplot as plt
 from mpi4py import MPI
+import os
+import gzip
+import io
+
 
 # Import your modules (ensure these files exist in your project)
 from FFNN import DeepNN
@@ -14,7 +18,7 @@ from utils2 import save_results, save_model, save_dataset
 
 def generate_data(distribution_type, train_size, d, device, r=0.5):
     """
-    Generate data from specified distribution.
+    Generate data from specified distribution using float32 instead of float64.
     
     Args:
         distribution_type: String indicating the distribution ('normal', 'uniform', or 'spiked_normal')
@@ -27,31 +31,70 @@ def generate_data(distribution_type, train_size, d, device, r=0.5):
         X: Generated data as a torch tensor of shape (train_size, d)
     """
     if distribution_type == 'normal':
-        # Standard normal distribution
-        X = torch.randn(train_size, d, device=device)
+        # Standard normal distribution with float32
+        X = torch.randn(train_size, d, device=device, dtype=torch.float32)
         
     elif distribution_type == 'uniform':
-        # Uniform distribution in [-1, 1]
-        X = 2 * torch.rand(train_size, d, device=device) - 1
+        # Uniform distribution in [-1, 1] with float32
+        X = 2 * torch.rand(train_size, d, device=device, dtype=torch.float32) - 1
         
     elif distribution_type == 'spiked_normal':
-        # Spiked normal: N(0, I_d + θθ^T * d^r)
-        # First, create a random unit vector θ
-        theta = torch.randn(d, device=device)
-        theta = theta / torch.norm(theta)  # Normalize to unit vector
-        
-        # Create base normal distribution
-        X = torch.randn(train_size, d, device=device)
-        
-        # Add the spike component: X += Z * θ where Z ~ N(0, d^r)
+        # Spiked normal with float32
+        theta = torch.randn(d, device=device, dtype=torch.float32)
+        theta = theta / torch.norm(theta)
+        X = torch.randn(train_size, d, device=device, dtype=torch.float32)
         spike_scale = d**r
-        Z = torch.randn(train_size, 1, device=device) * torch.sqrt(torch.tensor(spike_scale))
+        Z = torch.randn(train_size, 1, device=device, dtype=torch.float32) * torch.sqrt(torch.tensor(spike_scale, dtype=torch.float32))
         X = X + Z * theta
     else:
         raise ValueError(f"Unknown distribution type: {distribution_type}")
     
     return X
 
+def save_dataset_compressed(X, y, filepath, rank):
+    """
+    Save full dataset with compression to save disk space.
+    
+    Args:
+        X: Input tensor
+        y: Output tensor
+        filepath: Path to save the compressed dataset
+        rank: MPI rank (for logging)
+    """
+    print(f"Process {rank}: Compressing dataset...")
+    
+    # Convert to float32 to save space
+    X_f32 = X.detach().cpu().to(torch.float32)
+    y_f32 = y.detach().cpu().to(torch.float32)
+    
+    # Create a buffer to compress the data
+    buffer = io.BytesIO()
+    torch.save({'X': X_f32, 'y': y_f32}, buffer)
+    compressed_data = gzip.compress(buffer.getvalue(), compresslevel=9)
+    
+    # Save compressed data
+    with open(filepath, 'wb') as f:
+        f.write(compressed_data)
+    
+    file_size_mb = os.path.getsize(filepath) / (1024 * 1024)
+    print(f"Process {rank}: Saved compressed dataset ({file_size_mb:.2f} MB) to {filepath}")
+
+def save_kernel_compressed(kernel, filepath):
+    """Save kernel matrix with compression."""
+    # Convert to float32
+    kernel_f32 = kernel.to(torch.float32)
+    
+    # Compress with gzip
+    buffer = io.BytesIO()
+    torch.save(kernel_f32, buffer)
+    compressed_data = gzip.compress(buffer.getvalue(), compresslevel=9)
+    
+    # Save compressed data
+    with open(filepath, 'wb') as f:
+        f.write(compressed_data)
+    
+    file_size_mb = os.path.getsize(filepath) / (1024 * 1024)
+    print(f"Saved compressed kernel matrix ({file_size_mb:.2f} MB) to {filepath}")
 
 def create_target_kernel(feature_dim: int, alpha: float, device: torch.device, 
                          spectrum_type: str = 'polynomial', 
@@ -527,6 +570,20 @@ def main():
     comm = MPI.COMM_WORLD
     rank = comm.Get_rank()
     size = comm.Get_size()
+
+    # Assign each process to a specific GPU based on its rank
+    num_gpus = torch.cuda.device_count()
+    if num_gpus > 0:
+        gpu_id = rank % num_gpus
+        device = torch.device(f'cuda:{gpu_id}')
+        torch.cuda.set_device(device)  # This explicitly sets the device for this process
+    else:
+        device = torch.device('cpu')
+
+    if rank == 0:
+        print(f"Number of available GPUs: {num_gpus}")
+        for i in range(size):
+            print(f"Process {i} would use GPU {i % num_gpus}")
     
     # --- Hyperparameters ---
     # Define distributions to explore
@@ -536,10 +593,10 @@ def main():
     spectrum_type = 'polynomial'
     
     # Dimensions to explore
-    dimensions = [16]  
+    dimensions = [8,16]  
     
     # Alpha values to explore for the selected spectrum type
-    alpha_values = [4.0,8.0]
+    alpha_values = [0.0,0.5,1.0]
     
     # Spiked normal hyperparameter values
     r_values = [0.8]  # Exponent for d^r in spiked normal
@@ -578,15 +635,15 @@ def main():
     
     # Common hyperparameters
     depth = 2                   # Total network depth.
-    train_size = 800000         # Number of training samples.
+    train_size = 1000000         # Number of training samples.
     mode = 'standard_lr'        # Network mode.
-    use_log = True             # Use logarithmic eigenvalue loss.
-    epochs = 12000              # Training epochs.
+    use_log = False             # Use logarithmic eigenvalue loss.
+    epochs = 8000              # Training epochs.
     lr = 8e-4                   # Learning rate.
-    top_k =5                  # Number of top eigenvalues to match.
-    lambda_top = 20.0           # Adjusted top-k loss weight.
+    top_k =10                  # Number of top eigenvalues to match.
+    lambda_top = 10.0           # Adjusted top-k loss weight.
     lambda_eig = 50.0           # Adjusted eigenvalue loss weight.
-    rank_preservation_weight = 0.1 #0.01  
+    rank_preservation_weight = 0.01 #0.01  
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     if rank == 0:
@@ -693,7 +750,7 @@ def main():
         else:
             smart_name = f"{dist_abbr}{spec_abbr}_d{d}_H{hidden_size}_D{depth}_a{alpha:.1f}_{'O' if orthogonal else 'NO'}_{exp_num}"
         
-        save_dir = os.path.join("/home/goring/TF_spectrum/pretrain/lrgrid_0903_poly/",
+        save_dir = os.path.join("/home/goring/TF_spectrum/pretrain/paper_grid_1503/",
                                 f"PT_{smart_name}_{timestamp}")
         os.makedirs(save_dir, exist_ok=True)
         
@@ -745,11 +802,12 @@ def main():
         
         with torch.no_grad():
             y = model(X)
-        dataset_path = os.path.join(save_dir, f"dataset_{smart_name}.pt")
-        save_dataset(X, y, dataset_path, rank)
         
-        target_kernel_path = os.path.join(save_dir, f"target_kernel_{smart_name}.pt")
-        torch.save(target_kernel_used.detach().cpu(), target_kernel_path)
+        dataset_path = os.path.join(save_dir, f"dataset_{smart_name}.pt.gz")
+        #save_dataset_compressed(X, y, dataset_path, rank)  # Save only 5% of the data
+        
+        target_kernel_path = os.path.join(save_dir, f"target_kernel_{smart_name}.pt.gz")
+        save_kernel_compressed(target_kernel_used, target_kernel_path)
         print(f"Saved target kernel for {run_name} (Exp {exp_num}) to {target_kernel_path}")
         
         model_path = os.path.join(save_dir, f"model_{smart_name}.pt")
