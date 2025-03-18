@@ -1,0 +1,31 @@
+# Base configuration that contains common settings
+base_config:
+  base_results_dir: "/home/goring/TF_spectrum/results/paper_grid_1703_oldsetting_shuffle"
+  epochs: 5000
+  fine_tuning_epochs: 500
+  batch_size: 65536 
+  checkpoint_epochs: []
+  weight_decay: 0
+  n_test: 20000
+  save_model: false
+  normalize_data: false
+  num_experiments: 1
+  restart_checkpoint: null
+
+# Sweeps with their specific dataset directories
+sweeps:
+  # Full sweep with directory path
+  sweep_full:
+    # Just provide the base directory containing model directories
+    dataset_dir:
+      - "/home/goring/TF_spectrum/pretrain/paper_grid_1703"
+    
+    # Parameters to sweep over
+    parameters:
+      n_train: [10, 100, 1000, 10000, 50000, 100000, 200000, 300000, 500000, 750000, 1000000, 3000000,7000000,10000000]
+      learning_rates: [0.0005, 0.001] #0.00005,0.0005, 0.001
+      hidden_sizes: [256]
+      depths: [2]
+      modes: ["standard_lr"]
+      alignment: [false]
+      base_width: 256

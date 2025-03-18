@@ -1,0 +1,66 @@
+# Base configuration that contains common settings
+base_config:
+  base_results_dir: "/home/goring/TF_spectrum/results/biggrid_1803_bug_test2_bigbatch"
+  epochs: 5000
+  batch_size: 65536 
+  checkpoint_epochs: []
+  weight_decay: 0
+  n_test: 20000
+  save_model: false
+  normalize_data: false
+  num_experiments: 1
+  restart_checkpoint: null
+
+# Sweeps with their specific dataset paths
+sweeps:
+  # Learning rate sweep for first dataset group
+  sweep_full:
+    dataset_paths:
+      - "/home/goring/TF_spectrum/pretrain/grid_1803_globtest2/PT_NP_d8_H2_D2_a0.0_O_1_20250318_033400"
+      -  "/home/goring/TF_spectrum/pretrain/grid_1803_globtest2/PT_NP_d8_H2_D2_a0.5_O_1_20250318_033722"
+      -  "/home/goring/TF_spectrum/pretrain/grid_1803_globtest2/PT_NP_d8_H2_D2_a1.0_O_1_20250318_034038"
+      -  "/home/goring/TF_spectrum/pretrain/grid_1803_globtest2/PT_NP_d8_H2_D2_a4.0_O_1_20250318_033300"
+      -  "/home/goring/TF_spectrum/pretrain/grid_1803_globtest2/PT_NP_d8_H2_D2_a8.0_O_1_20250318_033613"
+      -  "/home/goring/TF_spectrum/pretrain/grid_1803_globtest2/PT_NP_d8_H4_D2_a0.0_O_1_20250318_033447"
+      -  "/home/goring/TF_spectrum/pretrain/grid_1803_globtest2/PT_NP_d8_H4_D2_a0.5_O_1_20250318_033809"
+      -  "/home/goring/TF_spectrum/pretrain/grid_1803_globtest2/PT_NP_d8_H4_D2_a1.0_O_1_20250318_034125"
+      -  "/home/goring/TF_spectrum/pretrain/grid_1803_globtest2/PT_NP_d8_H4_D2_a4.0_O_1_20250318_033347"
+      -  "/home/goring/TF_spectrum/pretrain/grid_1803_globtest2/PT_NP_d8_H4_D2_a8.0_O_1_20250318_033702"
+      -  "/home/goring/TF_spectrum/pretrain/grid_1803_globtest2/PT_NP_d8_H8_D2_a0.0_O_1_20250318_033532"
+      -  "/home/goring/TF_spectrum/pretrain/grid_1803_globtest2/PT_NP_d8_H8_D2_a0.5_O_1_20250318_033855"
+      -  "/home/goring/TF_spectrum/pretrain/grid_1803_globtest2/PT_NP_d8_H8_D2_a1.0_O_1_20250318_034210"
+      -  "/home/goring/TF_spectrum/pretrain/grid_1803_globtest2/PT_NP_d8_H8_D2_a4.0_O_1_20250318_033433"
+      -  "/home/goring/TF_spectrum/pretrain/grid_1803_globtest2/PT_NP_d8_H8_D2_a8.0_O_1_20250318_033750"
+      -  "/home/goring/TF_spectrum/pretrain/grid_1803_globtest2/PT_NP_d8_H16_D2_a0.0_O_1_20250318_033633"
+      -  "/home/goring/TF_spectrum/pretrain/grid_1803_globtest2/PT_NP_d8_H16_D2_a0.5_O_1_20250318_033953"
+      -  "/home/goring/TF_spectrum/pretrain/grid_1803_globtest2/PT_NP_d8_H16_D2_a1.0_O_1_20250318_034308"
+      -  "/home/goring/TF_spectrum/pretrain/grid_1803_globtest2/PT_NP_d8_H16_D2_a4.0_O_1_20250318_033529"
+      -  "/home/goring/TF_spectrum/pretrain/grid_1803_globtest2/PT_NP_d8_H16_D2_a8.0_O_1_20250318_033846"
+      -    "/home/goring/TF_spectrum/pretrain/grid_1803_globtest2/PT_NP_d8_H32_D2_a0.0_O_1_20250318_033445"
+      -    "/home/goring/TF_spectrum/pretrain/grid_1803_globtest2/PT_NP_d8_H32_D2_a0.5_O_1_20250318_034621"
+      -    "/home/goring/TF_spectrum/pretrain/grid_1803_globtest2/PT_NP_d8_H32_D2_a1.0_O_1_20250318_035812"
+      -    "/home/goring/TF_spectrum/pretrain/grid_1803_globtest2/PT_NP_d8_H32_D2_a4.0_O_1_20250318_033416"
+      -    "/home/goring/TF_spectrum/pretrain/grid_1803_globtest2/PT_NP_d8_H32_D2_a8.0_O_1_20250318_034632"
+      -    "/home/goring/TF_spectrum/pretrain/grid_1803_globtest2/PT_NP_d8_H64_D2_a0.0_O_1_20250318_033740"
+      -    "/home/goring/TF_spectrum/pretrain/grid_1803_globtest2/PT_NP_d8_H64_D2_a1.0_O_1_20250318_040107"
+      -    "/home/goring/TF_spectrum/pretrain/grid_1803_globtest2/PT_NP_d8_H64_D2_a0.5_O_1_20250318_034917"
+      -    "/home/goring/TF_spectrum/pretrain/grid_1803_globtest2/PT_NP_d8_H64_D2_a4.0_O_1_20250318_033720"
+      -    "/home/goring/TF_spectrum/pretrain/grid_1803_globtest2/PT_NP_d8_H64_D2_a8.0_O_1_20250318_034927"
+      -    "/home/goring/TF_spectrum/pretrain/grid_1803_globtest2/PT_NP_d8_H128_D2_a0.0_O_1_20250318_034438"
+      -    "/home/goring/TF_spectrum/pretrain/grid_1803_globtest2/PT_NP_d8_H128_D2_a0.5_O_1_20250318_035628"
+      -    "/home/goring/TF_spectrum/pretrain/grid_1803_globtest2/PT_NP_d8_H128_D2_a1.0_O_1_20250318_040826"
+      -    "/home/goring/TF_spectrum/pretrain/grid_1803_globtest2/PT_NP_d8_H128_D2_a4.0_O_1_20250318_034449"
+      -    "/home/goring/TF_spectrum/pretrain/grid_1803_globtest2/PT_NP_d8_H128_D2_a8.0_O_1_20250318_035650"
+       
+                  
+      
+
+    parameters:
+      hidden_sizes: [256]  # Width parameter
+      depths: [2]  # Depth parameter
+      base_width: 256   # Base width parameter
+      learning_rates: [0.001,0.005,0.0005] #0.0005,0.0001,0.00005,
+      n_train: [10,100,1000,10000,50000,100000,200000,300000,500000,750000,1000000,2000000,3000000,45000000]
+      modes: ["standard_lr"]
+      alignment: [False]
+  
